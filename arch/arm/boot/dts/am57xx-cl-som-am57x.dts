@@ -543,7 +543,7 @@
 };
 
 &usb2 {
-	dr_mode = "peripheral";
+	dr_mode = "host";
 };
 
 &gpio3 {
