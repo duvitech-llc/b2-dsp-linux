@@ -18,6 +18,238 @@
 #include <video/omapdss.h>
 #include <video/omap-panel-data.h>
 
+#if IS_ENABLED(CONFIG_I2C)
+#include <linux/module.h>
+#include <linux/i2c.h>
+#include <linux/slab.h>
+
+struct tfp410_encoder_params {
+	enum {
+		TFP410_INPUT_EDGE_FALLING = 0,
+		TFP410_INPUT_EDGE_RISING
+	} input_edge;
+
+	enum {
+		TFP410_INPUT_WIDTH_12BIT = 0,
+		TFP410_INPUT_WIDTH_24BIT
+	} input_width;
+
+	enum {
+		TFP410_INPUT_SINGLE_EDGE = 0,
+		TFP410_INPUT_DUAL_EDGE
+	} input_dual;
+
+	enum {
+		TFP410_PLL_FILTER_ON = 0,
+		TFP410_PLL_FILTER_OFF,
+	} pll_filter;
+
+	int input_skew; /** < Allowed range [-4, 3], use 0 for no de-skew. */
+	int duallink_skew; /** < Allowed range [-4, 3]. */
+};
+
+#define tfp410_info(client, format, ...)		\
+	dev_info(&client->dev, format, __VA_ARGS__)
+#define tfp410_err(client, format, ...)			\
+	dev_err(&client->dev, format, __VA_ARGS__)
+
+/* HW register definitions */
+
+#define TFP410_VENDOR_LO			0x0
+#define TFP410_VENDOR_HI			0x1
+#define TFP410_DEVICE_LO			0x2
+#define TFP410_DEVICE_HI			0x3
+#define TFP410_REVISION				0x4
+#define TFP410_FREQ_MIN				0x6
+#define TFP410_FREQ_MAX				0x7
+
+#define TFP410_CONTROL0				0x8
+#define TFP410_CONTROL0_POWER_ON		0x01
+#define TFP410_CONTROL0_EDGE_RISING		0x02
+#define TFP410_CONTROL0_INPUT_24BIT		0x04
+#define TFP410_CONTROL0_DUAL_EDGE		0x08
+#define TFP410_CONTROL0_HSYNC_ON		0x10
+#define TFP410_CONTROL0_VSYNC_ON		0x20
+
+#define TFP410_DETECT				0x9
+#define TFP410_DETECT_INTR_STAT			0x01
+#define TFP410_DETECT_HOTPLUG_STAT		0x02
+#define TFP410_DETECT_RECEIVER_STAT		0x04
+#define TFP410_DETECT_INTR_MODE_RECEIVER	0x00
+#define TFP410_DETECT_INTR_MODE_HOTPLUG		0x08
+#define TFP410_DETECT_OUT_MODE_HIGH		0x00
+#define TFP410_DETECT_OUT_MODE_INTR		0x10
+#define TFP410_DETECT_OUT_MODE_RECEIVER		0x20
+#define TFP410_DETECT_OUT_MODE_HOTPLUG		0x30
+#define TFP410_DETECT_VSWING_STAT		0x80
+
+#define TFP410_CONTROL1				0xa
+#define TFP410_CONTROL1_DESKEW_ENABLE		0x10
+#define TFP410_CONTROL1_DESKEW_INCR_SHIFT	5
+
+#define TFP410_GPIO				0xb
+
+#define TFP410_CONTROL2				0xc
+#define TFP410_CONTROL2_FILTER_ENABLE		0x01
+#define TFP410_CONTROL2_FILTER_SETTING_SHIFT	1
+#define TFP410_CONTROL2_DUALLINK_MASTER		0x40
+#define TFP410_CONTROL2_SYNC_CONT		0x80
+
+#define TFP410_DUALLINK				0xd
+#define TFP410_DUALLINK_ENABLE			0x10
+#define TFP410_DUALLINK_SKEW_SHIFT		5
+
+#define TFP410_PLLZONE				0xe
+#define TFP410_PLLZONE_STAT			0x08
+#define TFP410_PLLZONE_FORCE_ON			0x10
+#define TFP410_PLLZONE_FORCE_HIGH		0x20
+
+/* HW access functions */
+
+static void
+tfp410_write(struct i2c_client *client, uint8_t addr, uint8_t val)
+{
+	uint8_t buf[] = {addr, val};
+	int ret;
+
+	ret = i2c_master_send(client, buf, ARRAY_SIZE(buf));
+	if (ret < 0)
+		tfp410_err(client, "Error %d writing to subaddress 0x%x\n",
+			   ret, addr);
+}
+
+static uint8_t
+tfp410_read(struct i2c_client *client, uint8_t addr)
+{
+	uint8_t val;
+	int ret;
+
+	ret = i2c_master_send(client, &addr, sizeof(addr));
+	if (ret < 0)
+		goto fail;
+
+	ret = i2c_master_recv(client, &val, sizeof(val));
+	if (ret < 0)
+		goto fail;
+
+	return val;
+
+fail:
+	tfp410_err(client, "Error %d reading from subaddress 0x%x\n",
+		   ret, addr);
+	return 0;
+}
+
+static void
+tfp410_set_power_state(struct i2c_client *client, bool on)
+{
+	uint8_t control0 = tfp410_read(client, TFP410_CONTROL0);
+
+	if (on)
+		control0 |= TFP410_CONTROL0_POWER_ON;
+	else
+		control0 &= ~TFP410_CONTROL0_POWER_ON;
+
+	tfp410_write(client, TFP410_CONTROL0, control0);
+}
+
+static void
+tfp410_init_state(struct i2c_client *client,
+		  struct tfp410_encoder_params *config,
+		  bool duallink)
+{
+	tfp410_write(client, TFP410_CONTROL0,
+		     TFP410_CONTROL0_HSYNC_ON |
+		     TFP410_CONTROL0_VSYNC_ON |
+		     (config->input_edge ? TFP410_CONTROL0_EDGE_RISING : 0) |
+		     (config->input_width ? TFP410_CONTROL0_INPUT_24BIT : 0) |
+		     (config->input_dual ? TFP410_CONTROL0_DUAL_EDGE : 0));
+
+	tfp410_write(client, TFP410_DETECT,
+		     TFP410_DETECT_INTR_STAT |
+		     TFP410_DETECT_OUT_MODE_RECEIVER);
+
+	tfp410_write(client, TFP410_CONTROL1,
+		     (config->input_skew ? TFP410_CONTROL1_DESKEW_ENABLE : 0) |
+		     (((config->input_skew + 4) & 0x7)
+		      << TFP410_CONTROL1_DESKEW_INCR_SHIFT));
+
+	tfp410_write(client, TFP410_CONTROL2,
+		     TFP410_CONTROL2_SYNC_CONT |
+		     (config->pll_filter ? 0 : TFP410_CONTROL2_FILTER_ENABLE) |
+		     (4 << TFP410_CONTROL2_FILTER_SETTING_SHIFT));
+
+	tfp410_write(client, TFP410_PLLZONE, 0);
+
+	if (duallink)
+		tfp410_write(client, TFP410_DUALLINK,
+			     TFP410_DUALLINK_ENABLE |
+			     (((config->duallink_skew + 4) & 0x7)
+			      << TFP410_DUALLINK_SKEW_SHIFT));
+	else
+		tfp410_write(client, TFP410_DUALLINK, 0);
+}
+
+/* I2C driver functions */
+
+static int
+tfp410_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id)
+{
+	struct tfp410_encoder_params *config;
+
+	int vendor = tfp410_read(client, TFP410_VENDOR_HI) << 8 |
+		tfp410_read(client, TFP410_VENDOR_LO);
+	int device = tfp410_read(client, TFP410_DEVICE_HI) << 8 |
+		tfp410_read(client, TFP410_DEVICE_LO);
+	int rev = tfp410_read(client, TFP410_REVISION);
+
+	if (vendor != 0x1 || device != 0x6) {
+		tfp410_info(client, "Unknown device %x:%x.%x\n",
+			   vendor, device, rev);
+		return -ENODEV;
+	}
+
+	config = kzalloc(sizeof(*config), GFP_KERNEL);
+	if (!config)
+		return -ENOMEM;
+
+	config->input_width = TFP410_CONTROL0_INPUT_24BIT;
+
+	tfp410_init_state(client, config, 0);
+
+	tfp410_set_power_state(client, 1);
+
+	tfp410_info(client, "Detected device %x:%x.%x\n",
+		    vendor, device, rev);
+
+	kfree(config);
+
+	return 0;
+}
+
+static int
+tfp410_i2c_remove(struct i2c_client *client)
+{
+	tfp410_set_power_state(client, 0);
+	return 0;
+}
+
+static struct i2c_device_id tfp410_ids[] = {
+	{ "tfp410_i2c", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, tfp410_ids);
+
+static struct i2c_driver tfp410_i2c_driver = {
+	.probe = tfp410_i2c_probe,
+	.remove = tfp410_i2c_remove,
+	.driver = {
+		.name = "tfp410_i2c",
+	},
+	.id_table = tfp410_ids,
+};
+#endif
+
 struct panel_drv_data {
 	struct omap_dss_device dssdev;
 	struct omap_dss_device *in;
@@ -268,6 +500,14 @@ static int tfp410_probe(struct platform_device *pdev)
 		goto err_reg;
 	}
 
+#if IS_ENABLED(CONFIG_I2C)
+	r = i2c_add_driver(&tfp410_i2c_driver);
+	if (r != 0) {
+		printk(KERN_ERR "Failed to register TFP410 I2C driver: %d\n",
+		       r);
+	}
+#endif
+
 	return 0;
 err_reg:
 err_gpio:
@@ -290,6 +530,10 @@ static int __exit tfp410_remove(struct platform_device *pdev)
 	WARN_ON(omapdss_device_is_connected(dssdev));
 	if (omapdss_device_is_connected(dssdev))
 		tfp410_disconnect(dssdev, dssdev->dst);
+
+#if IS_ENABLED(CONFIG_I2C)
+	i2c_del_driver(&tfp410_i2c_driver);
+#endif
 
 	omap_dss_put_device(in);
 
@@ -315,6 +559,6 @@ static struct platform_driver tfp410_driver = {
 
 module_platform_driver(tfp410_driver);
 
-MODULE_AUTHOR("Tomi Valkeinen <tomi.valkeinen@ti.com>");
+MODULE_AUTHOR("Tomi Valkeinen <tomi.valkeinen@ti.com> and Francisco Jerez <currojerez@riseup.net>");
 MODULE_DESCRIPTION("TFP410 DPI to DVI encoder driver");
 MODULE_LICENSE("GPL");
