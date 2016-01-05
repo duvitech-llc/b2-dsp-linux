@@ -447,14 +447,14 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&qspi1_pins>;
 
-	spi-max-frequency = <48000000>;
+	spi-max-frequency = <1000000>;
 
 	spi_flash: spi_flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "spansion,m25p80", "jedec,spi-nor";
 		reg = <0>;				/* CS0 */
-		spi-max-frequency = <48000000>;
+		spi-max-frequency = <1000000>;
 
 		partition@0 {
 			label = "uboot";
@@ -473,7 +473,7 @@
 	};
 
 	/* touch controller */
-	ads7846@0 {
+	ads7846@1 {
 		pinctrl-names = "default";
 		pinctrl-0 = <&ads7846_pins>;
 
@@ -481,7 +481,7 @@
 		vcc-supply = <&ads7846reg>;
 
 		reg = <1>;                              /* CS1 */
-		spi-max-frequency = <1500000>;
+		spi-max-frequency = <1000000>;
 
 		interrupt-parent = <&gpio1>;
 		interrupts = <31 0>;
