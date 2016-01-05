@@ -210,6 +210,25 @@
 			DRA7XX_CORE_IOPAD(0x37d4, MUX_MODE15 | PULL_UP)
 		>;
 	};
+
+	nand_flash_pins: nand_flash_pins {
+		pinctrl-single,pins = <
+			DRA7XX_CORE_IOPAD(0x3400, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad0 */
+			DRA7XX_CORE_IOPAD(0x3404, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad1 */
+			DRA7XX_CORE_IOPAD(0x3408, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad2 */
+			DRA7XX_CORE_IOPAD(0x340C, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad3 */
+			DRA7XX_CORE_IOPAD(0x3410, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad4 */
+			DRA7XX_CORE_IOPAD(0x3414, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad5 */
+			DRA7XX_CORE_IOPAD(0x3418, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad6 */
+			DRA7XX_CORE_IOPAD(0x341C, PIN_INPUT | MUX_MODE0) 		/* gpmc_ad7 */
+			DRA7XX_CORE_IOPAD(0x34D8, PIN_INPUT_PULLUP  | MUX_MODE0)	/* gpmc_wait0 */
+			DRA7XX_CORE_IOPAD(0x34B4, PIN_OUTPUT_PULLUP | MUX_MODE0)	/* gpmc_cs0 */
+			DRA7XX_CORE_IOPAD(0x34CC, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* gpmc_wen */
+			DRA7XX_CORE_IOPAD(0x34C8, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* gpmc_oen_ren */
+			DRA7XX_CORE_IOPAD(0x34C4, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* gpmc_advn_ale */
+			DRA7XX_CORE_IOPAD(0x34D0, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* gpmc_ben0 */
+		>;
+	};
 };
 
 &i2c1 {
@@ -577,3 +596,68 @@
 	status = "okay";
 	ti,no-reset-on-init;
 };
+
+&gpio4 {
+        status = "okay";
+        ti,no-reset-on-init;
+};
+
+&elm {
+	status = "okay";
+};
+
+&gpmc {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&nand_flash_pins>;
+	ranges = <0 0 0x08000000 0x1000000>;
+	nand@0,0 {
+		/* To use NAND - GPIO4_1 (NAND chip nWP) is toggled HIGH in U-Boot */
+		compatible = "ti,omap2-nand";
+		reg = <0 0 4>;
+		ti,nand-ecc-opt = "bch8";
+		ti,elm-id = <&elm>;
+
+		nand-bus-width = <8>;
+		gpmc,device-width = <1>;
+		gpmc,sync-clk-ps = <0>;
+		gpmc,cs-on-ns = <0>;
+		gpmc,cs-rd-off-ns = <44>;
+		gpmc,cs-wr-off-ns = <44>;
+		gpmc,adv-on-ns = <6>;
+		gpmc,adv-rd-off-ns = <34>;
+		gpmc,adv-wr-off-ns = <44>;
+		gpmc,we-on-ns = <0>;
+		gpmc,we-off-ns = <40>;
+		gpmc,oe-on-ns = <0>;
+		gpmc,oe-off-ns = <54>;
+		gpmc,access-ns = <64>;
+		gpmc,rd-cycle-ns = <82>;
+		gpmc,wr-cycle-ns = <82>;
+		gpmc,wait-on-read = "true";
+		gpmc,wait-on-write = "true";
+		gpmc,bus-turnaround-ns = <0>;
+		gpmc,cycle2cycle-delay-ns = <0>;
+		gpmc,clk-activation-ns = <0>;
+		gpmc,wait-monitoring-ns = <0>;
+		gpmc,wr-access-ns = <40>;
+		gpmc,wr-data-mux-bus-ns = <0>;
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+		/* MTD partition table */
+		partition@0 {
+			label = "kernel";
+			reg = <0x00000000 0x00980000>;
+		};
+		partition@980000 {
+			label = "dtb";
+			reg = <0x00980000 0x00080000>;
+		};
+		partition@a00000 {
+			label = "rootfs";
+			reg = <0x00a00000 0>;
+		};
+	};
+};
+
