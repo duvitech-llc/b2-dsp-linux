@@ -50,6 +50,38 @@
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 	};
+
+
+        wlan_power_reg: regulatorfixed-wlan_power {
+                compatible = "regulator-fixed";
+                regulator-name = "wlan_power_fixed";
+                regulator-min-microvolt = <3300000>;
+                regulator-max-microvolt = <3300000>;
+                gpio = <&tps659038_gpio 1 GPIO_ACTIVE_HIGH>;	/* gpio0 */
+                enable-active-high;
+        };
+
+        wlan_twl_oe_reg: regulatorfixed-wlan_twl_oe {
+                compatible = "regulator-fixed";
+                regulator-name = "wlan_twl_oe_fixed";
+                regulator-min-microvolt = <3300000>;
+                regulator-max-microvolt = <3300000>;
+		vin-supply = <&wlan_power_reg>;
+                gpio = <&gpio1 30 GPIO_ACTIVE_HIGH>;	/* gpio1_30 */
+                startup-delay-us = <1000>;
+                enable-active-high;
+        };
+
+	wlan_en_reg: fixedregulator-wlan_en {
+		compatible = "regulator-fixed";
+		regulator-name = "wlan_en_fixed";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&wlan_twl_oe_reg>;
+		gpio = <&gpio1 4 GPIO_ACTIVE_HIGH>;	/* gpio1_4 */
+		startup-delay-us = <1000>;
+		enable-active-high;
+	};
 };
 
 &dra7_pmx_core {
@@ -227,6 +259,34 @@
 			DRA7XX_CORE_IOPAD(0x34C8, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* gpmc_oen_ren */
 			DRA7XX_CORE_IOPAD(0x34C4, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* gpmc_advn_ale */
 			DRA7XX_CORE_IOPAD(0x34D0, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* gpmc_ben0 */
+		>;
+	};
+
+	mmc4_pins_default: pinmux_mmc4_pins_default {
+		pinctrl-single,pins = <
+			DRA7XX_CORE_IOPAD(0x37E8, PIN_INPUT_PULLUP | MUX_MODE3)		/* uart1_ctsn.mmc4_clk */
+			DRA7XX_CORE_IOPAD(0x37EC, PIN_INPUT_PULLUP | MUX_MODE3)		/* uart1_rtsn.mmc4_cmd */
+			DRA7XX_CORE_IOPAD(0x37F0, PIN_INPUT_PULLUP | MUX_MODE3)		/* uart2_rxd.mmc4_dat0 */
+			DRA7XX_CORE_IOPAD(0x37F4, PIN_INPUT_PULLUP | MUX_MODE3)		/* uart2_txd.mmc4_dat1 */
+			DRA7XX_CORE_IOPAD(0x37F8, PIN_INPUT_PULLUP | MUX_MODE3)		/* uart2_ctsn.mmc4_dat2 */
+			DRA7XX_CORE_IOPAD(0x37FC, PIN_INPUT_PULLUP | MUX_MODE3)		/* uart2_rtsn.mmc4_dat3 */
+		>;
+	};
+
+	uart10_pins_default: pinmux_uart10_pins_default {
+		pinctrl-single,pins = <
+			DRA7XX_CORE_IOPAD(0x3570, PIN_INPUT_PULLUP | MUX_MODE8)		/* vin2a_d2.uart10_rxd */
+			DRA7XX_CORE_IOPAD(0x3574, PIN_OUTPUT_PULLDOWN | MUX_MODE8)	/* vin2a_d3.uart10_txd */
+			DRA7XX_CORE_IOPAD(0x3578, PIN_INPUT | MUX_MODE8)		/* vin2a_d4.uart10_ctsn */
+			DRA7XX_CORE_IOPAD(0x357C, PIN_OUTPUT_PULLDOWN | MUX_MODE8)	/* vin2a_d5.uart10_rtsn */
+		>;
+	};
+
+	wlan_pins_default: pinmux_wlan_pins_default {
+		pinctrl-single,pins = <
+			DRA7XX_CORE_IOPAD(0x3460, PIN_OUTPUT_PULLDOWN | MUX_MODE14)	/* gpmc_a8.gpio1_30 - TWL OE */
+			DRA7XX_CORE_IOPAD(0x3714, PIN_OUTPUT_PULLDOWN | MUX_MODE14)	/* mcasp2_axr4.gpio1_4 - WLAN EN */
+			DRA7XX_CORE_IOPAD(0x3820, PIN_INPUT | MUX_MODE14)		/* Wakeup2.gpio1_2 - WLAN IRQ */
 		>;
 	};
 };
@@ -473,6 +533,33 @@
 	bus-width = <8>;
 	ti,non-removable;
 	cap-mmc-dual-data-rate;
+};
+
+&mmc4 {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <
+			&mmc4_pins_default
+			&wlan_pins_default
+			&uart10_pins_default
+	>;
+
+	vmmc-supply = <&wlan_en_reg>;
+	bus-width = <4>;
+
+	ti,non-removable;
+	cap-power-off-card;
+	keep-power-in-suspend;
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+	wlcore: wlcore@0 {
+		compatible = "ti,wl1835";
+		reg = <2>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <2 IRQ_TYPE_EDGE_RISING>; 
+	};
 };
 
 &qspi {
