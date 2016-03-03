@@ -86,5 +86,11 @@
 #define VIP_VIN3B		(0x0 << 0)
 #define VIP_VIN2B		(0x1 << 0)
 
+/*
+ * Macro to allow using the absolute physical address instead of the
+ * padconf registers instead of the offset from padconf base.
+ */
+#define DRA7XX_CORE_IOPAD(pa, val)	(((pa) & 0xffff) - 0x3400) (val)
+
 #endif
 
