@@ -437,6 +437,7 @@ dtb-$(CONFIG_SOC_OMAP5) += \
 	omap5-sbc-t54.dtb \
 	omap5-uevm.dtb
 dtb-$(CONFIG_SOC_DRA7XX) += \
+	am57xx-cl-som-am57x.dtb \
 	dra7-evm.dtb \
 	dra7-evm-lcd-lg.dtb \
 	dra7-evm-lcd-osd.dtb \
