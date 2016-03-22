@@ -17,8 +17,8 @@
        compatible = "compulab,sbc-am57x", "compulab,cl-som-am57x", "ti,am5728", "ti,dra742", "ti,dra74", "ti,dra7";
 
        aliases {
-               display0 = &lcd0;
-               display1 = &hdmi;
+               display1 = &lcd0;
+               display0 = &hdmi;
        };
 
        backlight {
