@@ -14,6 +14,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include "dra74x.dtsi"
+#include <dt-bindings/clk/ti-dra7-atl.h>
 
 / {
 	model = "CompuLab CL-SOM-AM57x";
@@ -148,6 +149,38 @@
 		gpio = <&gpio1 4 GPIO_ACTIVE_HIGH>;	/* gpio1_4 */
 		startup-delay-us = <1000>;
 		enable-active-high;
+	};
+
+	sound0: sound@0 {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "cl-som-amx57xx";
+		simple-audio-card,widgets =
+			"Headphone", "Headphone Jack",
+			"Line", "Line Out",
+			"Microphone", "Mic Jack",
+			"Line", "Line In";
+		simple-audio-card,routing =
+			"Headphone Jack", "RHPOUT",
+			"Headphone Jack", "LHPOUT",
+			"LLINEIN", "Line Jack",
+			"RLINEIN", "Line Jack",
+			"MICIN", "Mic Bias",
+			"Mic Bias", "Mic Jack";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&sound0_master>;
+		simple-audio-card,frame-master = <&sound0_master>;
+		simple-audio-card,bitclock-inversion;
+
+		sound0_master: simple-audio-card,cpu {
+			sound-dai = <&mcasp3>;
+			system-clock-frequency = <18432000>;
+			system-clock-direction = "out";
+		};
+
+		simple-audio-card,codec {
+			sound-dai = <&wm8731>;
+			system-clock-direction = "in";
+		};
 	};
 };
 
@@ -354,6 +387,26 @@
 			DRA7XX_CORE_IOPAD(0x3460, PIN_OUTPUT_PULLDOWN | MUX_MODE14)	/* gpmc_a8.gpio1_30 - TWL OE */
 			DRA7XX_CORE_IOPAD(0x3714, PIN_OUTPUT_PULLDOWN | MUX_MODE14)	/* mcasp2_axr4.gpio1_4 - WLAN EN */
 			DRA7XX_CORE_IOPAD(0x3820, PIN_INPUT | MUX_MODE14)		/* Wakeup2.gpio1_2 - WLAN IRQ */
+		>;
+	};
+
+	mcasp3_pins_default: mcasp3_pins_default {
+		pinctrl-single,pins = <
+			DRA7XX_CORE_IOPAD(0x369c, PIN_OUTPUT_PULLDOWN  | MUX_MODE3)  /* xref_clk2.mcasp3_ahclkx */
+			DRA7XX_CORE_IOPAD(0x3724, PIN_INPUT_PULLDOWN | MUX_MODE0) /* mcasp3_aclkx.mcasp3_aclkx */
+			DRA7XX_CORE_IOPAD(0x3728, PIN_INPUT_PULLDOWN | MUX_MODE0) /* mcasp3_fsx.mcasp3_fsx */
+			DRA7XX_CORE_IOPAD(0x372c, PIN_OUTPUT_PULLDOWN | MUX_MODE0) /* mcasp3_axr0.mcasp3_axr0 */
+			DRA7XX_CORE_IOPAD(0x3730, PIN_INPUT_PULLDOWN | MUX_MODE0) /* mcasp3_axr1.mcasp3_axr1 */
+		>;
+	};
+
+	mcasp3_pins_sleep: mcasp3_pins_sleep {
+		pinctrl-single,pins = <
+			DRA7XX_CORE_IOPAD(0x369c, PIN_INPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x3724, PIN_INPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x3728, PIN_INPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x372c, PIN_INPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x3730, PIN_INPUT | MUX_MODE15)
 		>;
 	};
 };
@@ -866,4 +919,36 @@
 	memory-region = <&dsp2_cma_pool>;
 	mboxes = <&mailbox6 &mbox_dsp2_ipc3x>;
 	timers = <&timer6>;
+};
+
+&atl {
+	status = "okay";
+
+	assigned-clocks = <&abe_dpll_sys_clk_mux>,
+			  <&atl_gfclk_mux>,
+			  <&dpll_abe_ck>,
+			  <&dpll_abe_m2x2_ck>,
+			  <&atl_clkin2_ck>;
+	assigned-clock-parents = <&sys_clkin1>, <&dpll_abe_m2_ck>;
+	assigned-clock-rates = <0>, <0>, <36864000>;
+
+	atl2 {
+		bws = <DRA7_ATL_WS_MCASP2_FSX>;
+		aws = <DRA7_ATL_WS_MCASP3_FSX>;
+	};
+};
+
+&mcasp3 {
+	#sound-dai-cells = <0>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&mcasp3_pins_default>;
+	pinctrl-1 = <&mcasp3_pins_sleep>;
+	status = "okay";
+	fck_parent = "atl_clkin2_ck";
+
+	op-mode = <0>;          /* MCASP_IIS_MODE */
+	tdm-slots = <2>;
+	serial-dir = <
+		1 2 0 0
+	>;
 };
