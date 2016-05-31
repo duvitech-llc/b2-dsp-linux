@@ -1,7 +1,7 @@
 VERSION = 4
 PATCHLEVEL = 1
 SUBLEVEL = 13
-EXTRAVERSION = -cl-som-am57x-ti-3.1
+EXTRAVERSION = -cl-som-am57x-ti-3.2
 NAME = Series 4800
 
 # *DOCUMENTATION*
