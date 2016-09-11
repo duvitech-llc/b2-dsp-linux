@@ -40,6 +40,18 @@
 		};
 	};
 
+	dvi: connector@1 {
+		compatible = "dvi-connector";
+		label = "dvi";
+		digital;
+
+		port {
+			dvi_connector_in: endpoint {
+				remote-endpoint = <&tfp410_out>;
+			};
+		};
+	};
+
 	hdmi_conn: connector@0 {
 		compatible = "hdmi-connector";
 		label = "hdmi";

@@ -19,6 +19,7 @@
        aliases {
                display1 = &lcd0;
                display0 = &hdmi;
+		display2 = &dvi;
        };
 
        backlight {
@@ -30,6 +31,32 @@
 
                 gpios = <&gpio4 0 GPIO_ACTIVE_HIGH>; /* gpio4_0 */
         };
+
+	tfp410: tfp410@39 {
+		compatible = "omapdss,ti,tfp410";
+		powerdown-gpios = <&pca9555 13 GPIO_ACTIVE_HIGH>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				tfp410_in: endpoint@0 {
+					remote-endpoint = <&dpi_dvi_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				tfp410_out: endpoint@0 {
+					remote-endpoint = <&dvi_connector_in>;
+				};
+			};
+		};
+	};
 };
 
 &dra7_pmx_core {
@@ -164,6 +191,11 @@
                gpio-controller;
                #gpio-cells = <2>;
        };
+
+	dvicape {
+		compatible = "tfp410_i2c";
+		reg = <0x39>;
+	};
 };
 
 &dss {
@@ -178,6 +210,11 @@
                        remote-endpoint = <&lcd_in>;
                        data-lines = <24>;
                };
+
+		dpi_dvi_out: endpoint@1 {
+			remote-endpoint = <&tfp410_in>;
+			data-lines = <24>;
+		};
        };
 };
 
