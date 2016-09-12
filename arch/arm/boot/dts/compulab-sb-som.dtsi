@@ -19,7 +19,7 @@
 		enable-active-high;
 	};
 
-	lcd0: display {
+	lcd0: display@0 {
 		compatible = "startek,startek-kd050c", "panel-dpi";
 		label = "lcd";
 
@@ -37,6 +37,26 @@
 			vsync-active = <0>;
 			de-active = <1>;
 			pixelclk-active = <1>;
+		};
+	};
+
+	lvds0: display@1 {
+		compatible = "panel-dpi";
+		label = "lvds";
+
+		panel-timing {
+			clock-frequency = <74400000>;
+			pixelclk-active = <1>;
+			hactive = <1366>;
+			hfront-porch = <31>;
+			hback-porch = <98>;
+			hsync-len = <65>;
+			hsync-active = <1>;
+			vactive = <768>;
+			vback-porch = <22>;
+			vfront-porch = <4>;
+			vsync-len = <12>;
+			vsync-active = <0>;
 		};
 	};
 

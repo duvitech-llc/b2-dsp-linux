@@ -17,9 +17,10 @@
        compatible = "compulab,sbc-am57x", "compulab,cl-som-am57x", "ti,am5728", "ti,dra742", "ti,dra74", "ti,dra7";
 
        aliases {
-               display1 = &lcd0;
-               display0 = &hdmi;
+		display0 = &hdmi;
+		display1 = &lcd0;
 		display2 = &dvi;
+		display3 = &lvds0;
        };
 
        backlight {
@@ -47,7 +48,6 @@
 					remote-endpoint = <&dpi_dvi_out>;
 				};
 			};
-
 			port@1 {
 				reg = <1>;
 
@@ -114,6 +114,7 @@
 
        dss_dpi_pins: dss_pins {
                pinctrl-single,pins = <
+			/* LCD/DVI */
                        DRA7XX_CORE_IOPAD(0x35C8, PIN_OUTPUT_PULLUP | MUX_MODE0) /* vout1_clk */
                        DRA7XX_CORE_IOPAD(0x35CC, PIN_OUTPUT_PULLUP | MUX_MODE0) /* vout1_de */
                        DRA7XX_CORE_IOPAD(0x35D0, PIN_OUTPUT_PULLUP | MUX_MODE0) /* vout1_fld */
@@ -143,8 +144,38 @@
                        DRA7XX_CORE_IOPAD(0x3630, PIN_OUTPUT_PULLUP | MUX_MODE0) /* vout1_d21 */
                        DRA7XX_CORE_IOPAD(0x3634, PIN_OUTPUT_PULLUP | MUX_MODE0) /* vout1_d22 */
                        DRA7XX_CORE_IOPAD(0x3638, PIN_OUTPUT_PULLUP | MUX_MODE0) /* vout1_d23 */
-               >;
-       };
+			/* LVDS */
+			DRA7XX_CORE_IOPAD(0x355C, PIN_OUTPUT_PULLUP | MUX_MODE14) /* vin2a_fld0.gpio3_30 */
+			DRA7XX_CORE_IOPAD(0x34E8, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_fld0.vout3_clk */
+			DRA7XX_CORE_IOPAD(0x34E4, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_de0.vout3_de */
+			DRA7XX_CORE_IOPAD(0x34EC, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_hsync0.vout3_hsync */
+			DRA7XX_CORE_IOPAD(0x34F0, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_vsync0.vout3_vsync */
+			DRA7XX_CORE_IOPAD(0x3550, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d23.vout3_d0 */
+			DRA7XX_CORE_IOPAD(0x354C, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d22.vout3_d1 */
+			DRA7XX_CORE_IOPAD(0x3548, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vout3_d21.vout3_d2 */
+			DRA7XX_CORE_IOPAD(0x3544, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d20.vout3_d3 */
+			DRA7XX_CORE_IOPAD(0x3540, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d19.vout3_d4 */
+			DRA7XX_CORE_IOPAD(0x353C, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d18.vout3_d5 */
+			DRA7XX_CORE_IOPAD(0x3538, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d17.vout3_d6 */
+			DRA7XX_CORE_IOPAD(0x3534, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d16.vout3_d7 */
+			DRA7XX_CORE_IOPAD(0x3530, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d15.vout3_d8 */
+			DRA7XX_CORE_IOPAD(0x352c, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d14.vout3_d9 */
+			DRA7XX_CORE_IOPAD(0x3528, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d13.vout3_d10 */
+			DRA7XX_CORE_IOPAD(0x3524, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d12.vout3_d11 */
+			DRA7XX_CORE_IOPAD(0x3520, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d11.vout3_d12 */
+			DRA7XX_CORE_IOPAD(0x351c, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d10.vout3_d13 */
+			DRA7XX_CORE_IOPAD(0x3518, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d9.vout3_d14 */
+			DRA7XX_CORE_IOPAD(0x3514, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d8.vout3_d15 */
+			DRA7XX_CORE_IOPAD(0x3510, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d7.vout3_d16 */
+			DRA7XX_CORE_IOPAD(0x350c, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d6.vout3_d17 */
+			DRA7XX_CORE_IOPAD(0x3508, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d5.vout3_d18 */
+			DRA7XX_CORE_IOPAD(0x3504, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d4.vout3_d19 */
+			DRA7XX_CORE_IOPAD(0x3500, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d3.vout3_d20 */
+			DRA7XX_CORE_IOPAD(0x34fc, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d2.vout3_d21 */
+			DRA7XX_CORE_IOPAD(0x34f8, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d1.vout3_d22 */
+			DRA7XX_CORE_IOPAD(0x34f4, PIN_OUTPUT_PULLUP | MUX_MODE4) /* vin1a_d0.vout3_d23 */
+		>;
+	};
 };
 
 &uart3 {
@@ -205,17 +236,29 @@
 
        vdda_video-supply = <&ldoln_reg>;
 
-       port {
-               dpi_lcd_out: endpoint@0 {
-                       remote-endpoint = <&lcd_in>;
-                       data-lines = <24>;
-               };
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
 
-		dpi_dvi_out: endpoint@1 {
-			remote-endpoint = <&tfp410_in>;
-			data-lines = <24>;
+		port@0 {
+			reg = <0>;
+			dpi_lcd_out: endpoint@0 {
+				remote-endpoint = <&lcd_in>;
+				data-lines = <24>;
+			};
+			dpi_dvi_out: endpoint@1 {
+				remote-endpoint = <&tfp410_in>;
+				data-lines = <24>;
+			};
 		};
-       };
+		port@2 {
+			reg = <2>;
+			dpi_lvds_out: endpoint@2 {
+				remote-endpoint = <&lvds_in>;
+				data-lines = <24>;
+			};
+		};
+	};
 };
 
 &lcd0 {
@@ -224,9 +267,18 @@
        port {
                lcd_in: endpoint {
                        remote-endpoint = <&dpi_lcd_out>;
-                       data-lines = <24>;
                };
        };
+};
+
+&lvds0 {
+	enable-gpios = <&gpio3 30 GPIO_ACTIVE_HIGH>;
+
+	port {
+		lvds_in: endpoint {
+			remote-endpoint = <&dpi_lvds_out>;
+		};
+	};
 };
 
 &hdmi {
