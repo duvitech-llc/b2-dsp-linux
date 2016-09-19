@@ -151,6 +151,25 @@
 		enable-active-high;
 	};
 
+	bt_en_reg: fixedregulator-bt_en {
+		compatible = "regulator-fixed";
+		regulator-name = "bt_en_fixed";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&wlan_twl_oe_reg>;
+		gpio = <&gpio1 5 GPIO_ACTIVE_HIGH>;
+		startup-delay-us = <1000>;
+		enable-active-high;
+	};
+
+	bt_enable: bt_enable@0 {
+		compatible = "userspace-consumer-wrapper";
+		comment = "Enable/disbale bluetooth regulator bt_en_reg";
+
+		regulator-name = "bt_en_fixed";
+		us-folder-num = <0>;
+	};
+
 	sound0: sound@0 {
 		compatible = "simple-audio-card";
 		simple-audio-card,name = "cl-som-amx57xx";
@@ -387,6 +406,7 @@
 			DRA7XX_CORE_IOPAD(0x3460, PIN_OUTPUT_PULLDOWN | MUX_MODE14)	/* gpmc_a8.gpio1_30 - TWL OE */
 			DRA7XX_CORE_IOPAD(0x3714, PIN_OUTPUT_PULLDOWN | MUX_MODE14)	/* mcasp2_axr4.gpio1_4 - WLAN EN */
 			DRA7XX_CORE_IOPAD(0x3820, PIN_INPUT | MUX_MODE14)		/* Wakeup2.gpio1_2 - WLAN IRQ */
+			DRA7XX_CORE_IOPAD(0x3720, PIN_OUTPUT_PULLDOWN | MUX_MODE14)     /* mcasp2_axr7.gpio1_5 - BT EN */
 		>;
 	};
 
@@ -662,7 +682,6 @@
 	pinctrl-0 = <
 			&mmc4_pins_default
 			&wlan_pins_default
-			&uart10_pins_default
 	>;
 
 	vmmc-supply = <&wlan_en_reg>;
@@ -866,6 +885,12 @@
 			reg = <0x00a00000 0>;
 		};
 	};
+};
+
+&uart10 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart10_pins_default>;
 };
 
 &mmu0_dsp1 {
