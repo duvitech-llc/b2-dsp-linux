@@ -66,6 +66,10 @@ extern void ioport_unmap(void __iomem *);
 #define ioremap_wc ioremap_nocache
 #endif
 
+#ifndef ARCH_HAS_IOREMAP_WT
+#define ioremap_wt ioremap_nocache
+#endif
+
 #ifndef ARCH_HAS_IOREMAP_EXEC
 #define ioremap_exec ioremap
 #define ioremap_exec_nocache ioremap_nocache

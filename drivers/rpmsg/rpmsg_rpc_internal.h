@@ -1,7 +1,7 @@
 /*
  * Remote Processor Procedure Call Driver
  *
- * Copyright(c) 2012-2015 Texas Instruments. All rights reserved.
+ * Copyright (C) 2012-2016 Texas Instruments Incorporated - http://www.ti.com/
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -73,7 +73,7 @@ struct rppc_device {
 	struct device *dev;
 	struct rpmsg_channel *rpdev;
 	struct list_head instances;
-	struct mutex lock;
+	struct mutex lock; /* device state variables lock */
 	struct completion comp;
 	struct device_attribute *sig_attr;
 	struct rppc_func_signature *signatures;
@@ -110,7 +110,7 @@ struct rppc_instance {
 	struct rppc_device *rppcdev;
 	struct device *dev;
 	struct sk_buff_head queue;
-	struct mutex lock;
+	struct mutex lock; /* instance state variables lock */
 	wait_queue_head_t readq;
 	struct completion reply_arrived;
 	struct rpmsg_endpoint *ept;
@@ -244,8 +244,8 @@ enum rppc_infotype {
  * RPPC_MSGTYPE_DELETE_RESP.
  */
 struct rppc_instance_handle {
-	uint32_t endpoint_address;
-	uint32_t status;
+	u32 endpoint_address;
+	u32 status;
 } __packed;
 
 /**
@@ -255,9 +255,9 @@ struct rppc_instance_handle {
  * @count: used to do some basic sanity checking on array bounds
  */
 struct rppc_param_signature {
-	uint32_t direction;
-	uint32_t type;
-	uint32_t count;
+	u32 direction;
+	u32 type;
+	u32 count;
 };
 
 /**
@@ -274,7 +274,7 @@ struct rppc_param_signature {
  */
 struct rppc_func_signature {
 	char name[RPPC_MAX_CHANNEL_NAMELEN];
-	uint32_t num_param;
+	u32 num_param;
 	struct rppc_param_signature params[RPPC_MAX_NUM_PARAMS + 1];
 };
 
@@ -296,10 +296,10 @@ struct rppc_func_signature {
  * and RPPC_MSGTYPE_FUNCTION_INFO.
  */
 struct rppc_query_function {
-	uint32_t info_type;
-	uint32_t fxn_id;
+	u32 info_type;
+	u32 fxn_id;
 	union {
-		uint32_t num_calls;
+		u32 num_calls;
 		struct rppc_func_signature signature;
 	} info;
 };
@@ -345,7 +345,7 @@ enum rppc_state {
  * This payload is associated with messages of type RPPC_MSGTYPE_DEVINFO_RESP.
  */
 struct rppc_device_info {
-	uint32_t num_funcs;
+	u32 num_funcs;
 };
 
 /**
@@ -359,8 +359,8 @@ struct rppc_device_info {
  * XXX: check if this is needed still, not used anywhere at present
  */
 struct rppc_error {
-	uint32_t endpoint_address;
-	uint32_t status;
+	u32 endpoint_address;
+	u32 status;
 } __packed;
 
 /**
@@ -389,9 +389,9 @@ struct rppc_param_data {
  * right after the standard rpmsg header ends).
  */
 struct rppc_msg_header {
-	uint32_t msg_type;
-	uint32_t msg_len;
-	uint8_t  msg_data[0];
+	u32 msg_type;
+	u32 msg_len;
+	u8  msg_data[0];
 } __packed;
 
 #define RPPC_PAYLOAD(ptr, type)	\

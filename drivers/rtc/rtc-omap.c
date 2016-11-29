@@ -25,6 +25,7 @@
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/io.h>
+#include <linux/clk.h>
 #include <linux/regulator/machine.h>
 
 /*
@@ -132,6 +133,7 @@
 struct omap_rtc;
 
 struct omap_rtc_device_type {
+	bool has_32kclk_en;
 	bool has_irqwakeen;
 	bool has_pmic_mode;
 	bool has_power_up_reset;
@@ -142,11 +144,13 @@ struct omap_rtc_device_type {
 struct omap_rtc {
 	struct rtc_device *rtc;
 	void __iomem *base;
+	struct clk *clk;
 	int irq_alarm;
 	int irq_timer;
 	u8 interrupts_reg;
 	bool is_pmic_controller;
-	bool is_ext_src;
+	bool has_ext_clk;
+	bool is_suspending;
 	const struct omap_rtc_device_type *type;
 };
 
@@ -529,6 +533,7 @@ static void omap_rtc_power_off(void)
 	u32 val;
 
 	regulator_suspend_prepare(PM_SUSPEND_MAX);
+	omap_rtc_power_off_rtc->type->unlock(omap_rtc_power_off_rtc);
 	omap_rtc_power_off_program(rtc->dev.parent);
 
 	/* Set PMIC power enable and EXT_WAKEUP in case PB power on is used */
@@ -536,6 +541,7 @@ static void omap_rtc_power_off(void)
 	val |= OMAP_RTC_PMIC_POWER_EN_EN | OMAP_RTC_PMIC_EXT_WAKEUP_POL |
 	       OMAP_RTC_PMIC_EXT_WAKEUP_EN;
 	rtc_writel(omap_rtc_power_off_rtc, OMAP_RTC_PMIC_REG, val);
+	omap_rtc_power_off_rtc->type->lock(omap_rtc_power_off_rtc);
 
 	/*
 	 * Wait for alarm to trigger (within two seconds) and external PMIC to
@@ -575,6 +581,7 @@ static const struct omap_rtc_device_type omap_rtc_default_type = {
 };
 
 static const struct omap_rtc_device_type omap_rtc_am3352_type = {
+	.has_32kclk_en	= true,
 	.has_irqwakeen	= true,
 	.has_pmic_mode	= true,
 	.lock		= am3352_rtc_lock,
@@ -634,8 +641,6 @@ static int omap_rtc_probe(struct platform_device *pdev)
 		rtc->is_pmic_controller = rtc->type->has_pmic_mode &&
 				of_property_read_bool(pdev->dev.of_node,
 						"system-power-controller");
-		rtc->is_ext_src = of_property_read_bool(pdev->dev.of_node,
-						"ext-clk-src");
 	} else {
 		id_entry = platform_get_device_id(pdev);
 		rtc->type = (void *)id_entry->driver_data;
@@ -648,6 +653,15 @@ static int omap_rtc_probe(struct platform_device *pdev)
 	rtc->irq_alarm = platform_get_irq(pdev, 1);
 	if (rtc->irq_alarm <= 0)
 		return -ENOENT;
+
+	rtc->clk = devm_clk_get(&pdev->dev, "ext-clk");
+	if (!IS_ERR(rtc->clk))
+		rtc->has_ext_clk = true;
+	else
+		rtc->clk = devm_clk_get(&pdev->dev, "int-clk");
+
+	if (!IS_ERR(rtc->clk))
+		clk_prepare_enable(rtc->clk);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	rtc->base = devm_ioremap_resource(&pdev->dev, res);
@@ -668,6 +682,13 @@ static int omap_rtc_probe(struct platform_device *pdev)
 	 * NOTE: ALARM2 is not cleared on AM3352 if rtc_write (writeb) is used
 	 */
 	rtc_writel(rtc, OMAP_RTC_INTERRUPTS_REG, 0);
+
+	/* enable RTC functional clock */
+	if (rtc->type->has_32kclk_en) {
+		reg = rtc_read(rtc, OMAP_RTC_OSC_REG);
+		rtc_writel(rtc, OMAP_RTC_OSC_REG,
+				reg | OMAP_RTC_OSC_32KCLK_EN);
+	}
 
 	/* clear old status */
 	reg = rtc_read(rtc, OMAP_RTC_STATUS_REG);
@@ -716,7 +737,11 @@ static int omap_rtc_probe(struct platform_device *pdev)
 	if (reg != new_ctrl)
 		rtc_write(rtc, OMAP_RTC_CTRL_REG, new_ctrl);
 
-	if (rtc->is_ext_src) {
+	/*
+	 * If we have the external clock then switch to it so we can keep
+	 * ticking across suspend.
+	 */
+	if (rtc->has_ext_clk) {
 		reg = rtc_read(rtc, OMAP_RTC_OSC_REG);
 		reg &= ~OMAP_RTC_OSC_OSC32K_GZ_DISABLE;
 		reg |= OMAP_RTC_OSC_32KCLK_EN | OMAP_RTC_OSC_SEL_32KCLK_SRC;
@@ -770,14 +795,24 @@ err:
 static int __exit omap_rtc_remove(struct platform_device *pdev)
 {
 	struct omap_rtc *rtc = platform_get_drvdata(pdev);
+	u8 reg;
 
 	omap_rtc_cleanup_pm_power_off(rtc);
 
 	device_init_wakeup(&pdev->dev, 0);
 
+	if (!IS_ERR(rtc->clk))
+		clk_disable_unprepare(rtc->clk);
+
 	rtc->type->unlock(rtc);
 	/* leave rtc running, but disable irqs */
 	rtc_write(rtc, OMAP_RTC_INTERRUPTS_REG, 0);
+
+	if (rtc->has_ext_clk) {
+		reg = rtc_read(rtc, OMAP_RTC_OSC_REG);
+		reg &= ~OMAP_RTC_OSC_SEL_32KCLK_SRC;
+		rtc_write(rtc, OMAP_RTC_OSC_REG, reg);
+	}
 
 	rtc->type->lock(rtc);
 
@@ -807,8 +842,7 @@ static int omap_rtc_suspend(struct device *dev)
 		rtc_write(rtc, OMAP_RTC_INTERRUPTS_REG, 0);
 	rtc->type->lock(rtc);
 
-	/* Disable the clock/module */
-	pm_runtime_put_sync(dev);
+	rtc->is_suspending = true;
 
 	return 0;
 }
@@ -817,9 +851,6 @@ static int omap_rtc_resume(struct device *dev)
 {
 	struct omap_rtc *rtc = dev_get_drvdata(dev);
 
-	/* Enable the clock/module so that we can access the registers */
-	pm_runtime_get_sync(dev);
-
 	rtc->type->unlock(rtc);
 	if (device_may_wakeup(dev))
 		disable_irq_wake(rtc->irq_alarm);
@@ -827,11 +858,34 @@ static int omap_rtc_resume(struct device *dev)
 		rtc_write(rtc, OMAP_RTC_INTERRUPTS_REG, rtc->interrupts_reg);
 	rtc->type->lock(rtc);
 
+	rtc->is_suspending = false;
+
 	return 0;
 }
 #endif
 
-static SIMPLE_DEV_PM_OPS(omap_rtc_pm_ops, omap_rtc_suspend, omap_rtc_resume);
+#ifdef CONFIG_PM
+static int omap_rtc_runtime_suspend(struct device *dev)
+{
+	struct omap_rtc *rtc = dev_get_drvdata(dev);
+
+	if (rtc->is_suspending && !rtc->has_ext_clk)
+		return -EBUSY;
+
+	return 0;
+}
+
+static int omap_rtc_runtime_resume(struct device *dev)
+{
+	return 0;
+}
+#endif
+
+static const struct dev_pm_ops omap_rtc_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(omap_rtc_suspend, omap_rtc_resume)
+	SET_RUNTIME_PM_OPS(omap_rtc_runtime_suspend,
+			   omap_rtc_runtime_resume, NULL)
+};
 
 static void omap_rtc_shutdown(struct platform_device *pdev)
 {

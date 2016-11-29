@@ -1,7 +1,7 @@
 /*
  * SYSCON regmap reset driver
  *
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Andrew F. Davis <afd@ti.com>
  *	Suman Anna <afd@ti.com>
  *
@@ -15,10 +15,10 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/idr.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
@@ -31,6 +31,7 @@
  * @status_offset: reset status register offset from syscon base
  * @status_reset_bit: reset status bit in the reset status register
  * @status_assert_high: flag to indicate if a set bit represents asserted state
+ * @toggle: flag to indicate this reset has no readable status register
  */
 struct syscon_reset_control {
 	unsigned int offset;
@@ -39,6 +40,7 @@ struct syscon_reset_control {
 	unsigned int status_offset;
 	unsigned int status_reset_bit;
 	bool status_assert_high;
+	bool toggle;
 };
 
 /**
@@ -52,11 +54,71 @@ struct syscon_reset_data {
 	struct reset_controller_dev rcdev;
 	struct device *dev;
 	struct regmap *memory;
-	struct idr idr;
 };
 
 #define to_syscon_reset_data(rcdev)	\
 	container_of(rcdev, struct syscon_reset_data, rcdev)
+
+/**
+ * syscon_reset_get_control() - get reset control info from DT node
+ * @data: reset controller data
+ * @id: ID address of control data node
+ * @control: control data struct to fill
+ *
+ * Search DT for a child node at the specified address that contains
+ * reset control info and use that to fill in control data.
+ *
+ * XXX: Evaluate if parsing needs to be done in probe to improve
+ *      lookup at runtime.
+ *
+ * Return: 0 for successful request, else a corresponding error value
+ */
+static int syscon_reset_get_control(struct syscon_reset_data *data,
+				    unsigned long id,
+				    struct syscon_reset_control *control)
+{
+	struct device_node *child;
+	const __be32 *address;
+	const __be32 *list;
+	int size;
+
+	for_each_child_of_node(data->rcdev.of_node, child) {
+		address = of_get_address(child, 0, NULL, NULL);
+		if (!address || be32_to_cpup(address) != id)
+			continue;
+
+		list = of_get_property(child, "reset-control", &size);
+		if (!list || size != (3 * sizeof(*list)))
+			return -EINVAL;
+		control->offset = be32_to_cpup(list++);
+		control->reset_bit = be32_to_cpup(list++);
+		control->assert_high = be32_to_cpup(list) == 1;
+
+		if (of_find_property(child, "reset-toggle", NULL)) {
+			control->toggle = true;
+			return 0;
+		}
+		control->toggle = false;
+
+		list = of_get_property(child, "reset-status", &size);
+		if (!list) {
+			/* use control register values */
+			control->status_offset = control->offset;
+			control->status_reset_bit = control->reset_bit;
+			control->status_assert_high = control->assert_high;
+			return 0;
+		}
+
+		if (size != (3 * sizeof(*list)))
+			return -EINVAL;
+		control->status_offset = be32_to_cpup(list++);
+		control->status_reset_bit = be32_to_cpup(list++);
+		control->status_assert_high = be32_to_cpup(list) == 1;
+		return 0;
+	}
+
+	return -ENOENT;
+}
 
 /**
  * syscon_reset_set() - program a device's reset
@@ -74,17 +136,18 @@ static int syscon_reset_set(struct reset_controller_dev *rcdev,
 			    unsigned long id, bool assert)
 {
 	struct syscon_reset_data *data = to_syscon_reset_data(rcdev);
-	struct syscon_reset_control *control;
+	struct syscon_reset_control control;
 	unsigned int mask, value;
+	int ret;
 
-	control = idr_find(&data->idr, id);
-	if (!control)
-		return -EINVAL;
+	ret = syscon_reset_get_control(data, id, &control);
+	if (ret)
+		return ret;
 
-	mask = BIT(control->reset_bit);
-	value = (assert == control->assert_high) ? mask : 0x0;
+	mask = BIT(control.reset_bit);
+	value = (assert == control.assert_high) ? mask : 0x0;
 
-	return regmap_update_bits(data->memory, control->offset, mask, value);
+	return regmap_update_bits(data->memory, control.offset, mask, value);
 }
 
 /**
@@ -131,26 +194,30 @@ static int syscon_reset_deassert(struct reset_controller_dev *rcdev,
  * This function implements the reset driver op to return the status of a
  * device's reset.
  *
- * Return: 0 if reset is deasserted, or a non-zero value if reset is asserted
+ * Return: 0 if reset is deasserted, true if reset is asserted, else a
+ * corresponding error value
  */
 static int syscon_reset_status(struct reset_controller_dev *rcdev,
 			       unsigned long id)
 {
 	struct syscon_reset_data *data = to_syscon_reset_data(rcdev);
-	struct syscon_reset_control *control;
+	struct syscon_reset_control control;
 	unsigned int reset_state;
 	int ret;
 
-	control = idr_find(&data->idr, id);
-	if (!control)
-		return -EINVAL;
-
-	ret = regmap_read(data->memory, control->status_offset, &reset_state);
+	ret = syscon_reset_get_control(data, id, &control);
 	if (ret)
 		return ret;
 
-	return (reset_state & BIT(control->status_reset_bit)) ==
-			control->status_assert_high;
+	if (control.toggle)
+		return -ENOSYS; /* status not supported for this reset */
+
+	ret = regmap_read(data->memory, control.status_offset, &reset_state);
+	if (ret)
+		return ret;
+
+	return (reset_state & BIT(control.status_reset_bit)) ==
+			control.status_assert_high;
 }
 
 static struct reset_control_ops syscon_reset_ops = {
@@ -159,75 +226,30 @@ static struct reset_control_ops syscon_reset_ops = {
 	.status		= syscon_reset_status,
 };
 
-/**
- * syscon_reset_of_xlate() - translate a set of OF arguments to a reset ID
- * @rcdev: reset controller entity
- * @reset_spec: OF reset argument specifier
- *
- * This function performs the translation of the reset argument specifier
- * values defined in a reset consumer device node. The function allocates a
- * reset control structure for that device reset, that will be used by the
- * driver for performing any reset functions on that reset. An idr structure
- * is allocated and used to map to the reset control structure. This idr is
- * used by the driver to do reset lookups.
- *
- * Return: 0 for successful request, else a corresponding error value
- */
-static int syscon_reset_of_xlate(struct reset_controller_dev *rcdev,
-				 const struct of_phandle_args *reset_spec)
-{
-	struct syscon_reset_data *data = to_syscon_reset_data(rcdev);
-	struct syscon_reset_control *control;
-
-	if (WARN_ON(reset_spec->args_count != rcdev->of_reset_n_cells))
-		return -EINVAL;
-
-	control = devm_kzalloc(data->dev, sizeof(*control), GFP_KERNEL);
-	if (!control)
-		return -ENOMEM;
-
-	control->offset = reset_spec->args[0];
-	control->reset_bit = reset_spec->args[1];
-	control->assert_high = reset_spec->args[2] == 1;
-	control->status_offset = reset_spec->args[3];
-	control->status_reset_bit = reset_spec->args[4];
-	control->status_assert_high = reset_spec->args[5] == 1;
-
-	return idr_alloc(&data->idr, control, 0, 0, GFP_KERNEL);
-}
-
-static const struct of_device_id syscon_reset_of_match[] = {
-	{ .compatible = "syscon-reset", },
-	{ /* sentinel */ },
-};
-MODULE_DEVICE_TABLE(of, syscon_reset_of_match);
-
 static int syscon_reset_probe(struct platform_device *pdev)
 {
 	struct syscon_reset_data *data;
-	struct device_node *np = pdev->dev.of_node;
+	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node;
 	struct regmap *memory;
 
 	if (!np)
 		return -ENODEV;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	memory = syscon_regmap_lookup_by_phandle(np, "syscon");
+	memory = syscon_node_to_regmap(np->parent);
 	if (IS_ERR(memory))
 		return PTR_ERR(memory);
 
 	data->rcdev.ops = &syscon_reset_ops;
 	data->rcdev.owner = THIS_MODULE;
 	data->rcdev.of_node = np;
-	data->rcdev.of_reset_n_cells = 6;
-	data->rcdev.of_xlate = syscon_reset_of_xlate;
-	data->dev = &pdev->dev;
+	data->rcdev.nr_resets = of_get_child_count(np);
+	data->dev = dev;
 	data->memory = memory;
-	idr_init(&data->idr);
-
 	platform_set_drvdata(pdev, data);
 
 	return reset_controller_register(&data->rcdev);
@@ -239,10 +261,14 @@ static int syscon_reset_remove(struct platform_device *pdev)
 
 	reset_controller_unregister(&data->rcdev);
 
-	idr_destroy(&data->idr);
-
 	return 0;
 }
+
+static const struct of_device_id syscon_reset_of_match[] = {
+	{ .compatible = "syscon-reset", },
+	{ /* sentinel */ },
+};
+MODULE_DEVICE_TABLE(of, syscon_reset_of_match);
 
 static struct platform_driver syscon_reset_driver = {
 	.probe = syscon_reset_probe,

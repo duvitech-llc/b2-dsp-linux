@@ -1,7 +1,7 @@
 /*
  * TI SCI Generic Power Domain Driver
  *
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	J Keerthy <j-keerthy@ti.com>
  *	Dave Gerlach <d-gerlach@ti.com>
  *
@@ -22,7 +22,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/slab.h>
-#include <linux/ti_sci_protocol.h>
+#include <linux/soc/ti/ti_sci_protocol.h>
 
 #define TI_GENPD_NAME_LENGTH	16
 
@@ -184,6 +184,7 @@ static const struct of_device_id ti_sci_pm_domain_matches[] = {
 	{ .compatible = "ti,sci-pm-domains", },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, ti_sci_pm_domain_matches);
 
 static int ti_sci_pm_domains_probe(struct platform_device *pdev)
 {
@@ -219,4 +220,3 @@ module_platform_driver(ti_sci_pm_domains_driver);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("TI System Control Interface(SCI) Power Domain driver");
 MODULE_AUTHOR("Dave Gerlach");
-MODULE_ALIAS("platform:ti-sci-pm-domains");

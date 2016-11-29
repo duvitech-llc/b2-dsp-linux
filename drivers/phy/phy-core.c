@@ -244,6 +244,38 @@ out:
 }
 EXPORT_SYMBOL_GPL(phy_init);
 
+/**
+ * phy_reset() - resets a PHY device without shutting down
+ * @phy - the phy to be reset
+ *
+ * During runtime, the PHY may need to be reset in order to
+ * re-establish connection etc without being shut down or exit.
+ */
+int phy_reset(struct phy *phy)
+{
+	int ret;
+
+	if (!phy)
+		return 0;
+
+	ret = phy_pm_runtime_get_sync(phy);
+	if (ret < 0 && ret != -ENOTSUPP)
+		return ret;
+	ret = 0; /* Override possible ret == -ENOTSUPP */
+
+	mutex_lock(&phy->mutex);
+	if (phy->ops->reset) {
+		ret = phy->ops->reset(phy);
+		if (ret < 0)
+			dev_dbg(&phy->dev, "phy reset failed --> %d\n", ret);
+	}
+
+	mutex_unlock(&phy->mutex);
+	phy_pm_runtime_put(phy);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(phy_reset);
+
 int phy_exit(struct phy *phy)
 {
 	int ret;
@@ -275,20 +307,21 @@ EXPORT_SYMBOL_GPL(phy_exit);
 
 int phy_power_on(struct phy *phy)
 {
-	int ret;
+	int ret = 0;
 
 	if (!phy)
-		return 0;
+		goto out;
 
 	if (phy->pwr) {
 		ret = regulator_enable(phy->pwr);
 		if (ret)
-			return ret;
+			goto out;
 	}
 
 	ret = phy_pm_runtime_get_sync(phy);
 	if (ret < 0 && ret != -ENOTSUPP)
-		return ret;
+		goto err_pm_sync;
+
 	ret = 0; /* Override possible ret == -ENOTSUPP */
 
 	mutex_lock(&phy->mutex);
@@ -296,19 +329,20 @@ int phy_power_on(struct phy *phy)
 		ret = phy->ops->power_on(phy);
 		if (ret < 0) {
 			dev_err(&phy->dev, "phy poweron failed --> %d\n", ret);
-			goto out;
+			goto err_pwr_on;
 		}
 	}
 	++phy->power_count;
 	mutex_unlock(&phy->mutex);
 	return 0;
 
-out:
+err_pwr_on:
 	mutex_unlock(&phy->mutex);
 	phy_pm_runtime_put_sync(phy);
+err_pm_sync:
 	if (phy->pwr)
 		regulator_disable(phy->pwr);
-
+out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(phy_power_on);
@@ -367,13 +401,21 @@ static struct phy *_of_phy_get(struct device_node *np, int index)
 	phy_provider = of_phy_provider_lookup(args.np);
 	if (IS_ERR(phy_provider) || !try_module_get(phy_provider->owner)) {
 		phy = ERR_PTR(-EPROBE_DEFER);
-		goto err0;
+		goto out_unlock;
+	}
+
+	if (!of_device_is_available(args.np)) {
+		dev_warn(phy_provider->dev, "Requested PHY is disabled\n");
+		phy = ERR_PTR(-ENODEV);
+		goto out_put_module;
 	}
 
 	phy = phy_provider->of_xlate(phy_provider->dev, &args);
+
+out_put_module:
 	module_put(phy_provider->owner);
 
-err0:
+out_unlock:
 	mutex_unlock(&phy_provider_mutex);
 	of_node_put(args.np);
 
@@ -628,8 +670,9 @@ EXPORT_SYMBOL_GPL(devm_of_phy_get);
  * @np: node containing the phy
  * @index: index of the phy
  *
- * Gets the phy using _of_phy_get(), and associates a device with it using
- * devres. On driver detach, release function is invoked on the devres data,
+ * Gets the phy using _of_phy_get(), then gets a refcount to it,
+ * and associates a device with it using devres. On driver detach,
+ * release function is invoked on the devres data,
  * then, devres data is freed.
  *
  */
@@ -643,12 +686,20 @@ struct phy *devm_of_phy_get_by_index(struct device *dev, struct device_node *np,
 		return ERR_PTR(-ENOMEM);
 
 	phy = _of_phy_get(np, index);
-	if (!IS_ERR(phy)) {
-		*ptr = phy;
-		devres_add(dev, ptr);
-	} else {
+	if (IS_ERR(phy)) {
 		devres_free(ptr);
+		return phy;
 	}
+
+	if (!try_module_get(phy->ops->owner)) {
+		devres_free(ptr);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	get_device(&phy->dev);
+
+	*ptr = phy;
+	devres_add(dev, ptr);
 
 	return phy;
 }
@@ -683,16 +734,6 @@ struct phy *phy_create(struct device *dev, struct device_node *node,
 		goto free_phy;
 	}
 
-	/* phy-supply */
-	phy->pwr = regulator_get_optional(dev, "phy");
-	if (IS_ERR(phy->pwr)) {
-		if (PTR_ERR(phy->pwr) == -EPROBE_DEFER) {
-			ret = -EPROBE_DEFER;
-			goto free_ida;
-		}
-		phy->pwr = NULL;
-	}
-
 	device_initialize(&phy->dev);
 	mutex_init(&phy->mutex);
 
@@ -705,6 +746,16 @@ struct phy *phy_create(struct device *dev, struct device_node *node,
 	ret = dev_set_name(&phy->dev, "phy-%s.%d", dev_name(dev), id);
 	if (ret)
 		goto put_dev;
+
+	/* phy-supply */
+	phy->pwr = regulator_get_optional(&phy->dev, "phy");
+	if (IS_ERR(phy->pwr)) {
+		ret = PTR_ERR(phy->pwr);
+		if (ret == -EPROBE_DEFER)
+			goto put_dev;
+
+		phy->pwr = NULL;
+	}
 
 	ret = device_add(&phy->dev);
 	if (ret)
@@ -720,9 +771,6 @@ struct phy *phy_create(struct device *dev, struct device_node *node,
 put_dev:
 	put_device(&phy->dev);  /* calls phy_release() which frees resources */
 	return ERR_PTR(ret);
-
-free_ida:
-	ida_simple_remove(&phy_ida, phy->id);
 
 free_phy:
 	kfree(phy);

@@ -1,7 +1,7 @@
 /*
  * Remote Processor Procedure Call Driver
  *
- * Copyright(c) 2012-2015 Texas Instruments. All rights reserved.
+ * Copyright (C) 2012-2016 Texas Instruments Incorporated - http://www.ti.com/
  *
  * Erik Rainey <erik.rainey@ti.com>
  * Suman Anna <s-anna@ti.com>
@@ -306,12 +306,12 @@ struct rppc_dma_buf *rppc_find_dmabuf(struct rppc_instance *rpc, int fd)
  * Return: 0 on success, or an appropriate failure code otherwise
  */
 static int rppc_map_page(struct rppc_instance *rpc, int fd, u32 offset,
-			 uint8_t **base_ptr, struct dma_buf **dmabuf)
+			 u8 **base_ptr, struct dma_buf **dmabuf)
 {
 	int ret = 0;
-	uint8_t *ptr = NULL;
+	u8 *ptr = NULL;
 	struct dma_buf *dbuf = NULL;
-	uint32_t pg_offset;
+	u32 pg_offset;
 	unsigned long pg_num;
 	size_t begin, end = PAGE_SIZE;
 	struct device *dev = rpc->dev;
@@ -372,9 +372,9 @@ out:
  * the functionality of rppc_map_page.
  */
 static void rppc_unmap_page(struct rppc_instance *rpc, u32 offset,
-			    uint8_t *base_ptr, struct dma_buf *dmabuf)
+			    u8 *base_ptr, struct dma_buf *dmabuf)
 {
-	uint32_t pg_offset;
+	u32 pg_offset;
 	unsigned long pg_num;
 	size_t begin, end = PAGE_SIZE;
 	struct device *dev = rpc->dev;
@@ -475,10 +475,10 @@ out:
 int rppc_xlate_buffers(struct rppc_instance *rpc, struct rppc_function *func,
 		       int direction)
 {
-	uint8_t *base_ptr = NULL;
+	u8 *base_ptr = NULL;
 	struct dma_buf *dbuf = NULL;
 	struct device *dev = rpc->dev;
-	uint32_t ptr_idx, pri_offset, sec_offset, offset, pg_offset, size;
+	u32 ptr_idx, pri_offset, sec_offset, offset, pg_offset, size;
 	int i, limit, inc = 1;
 	virt_addr_t kva, uva, buva;
 	dev_addr_t rda;
@@ -590,7 +590,7 @@ int rppc_xlate_buffers(struct rppc_instance *rpc, struct rppc_function *func,
 			 * it back on the function return path
 			 */
 			func->translations[i].fd = (int32_t)uva;
-			*(phys_addr_t *)kva = rda;
+			*(virt_addr_t *)kva = rda;
 			dev_dbg(dev, "replaced UVA %p with RDA %p at KVA %p\n",
 				(void *)uva, (void *)rda, (void *)kva);
 		} else if (direction == RPPC_RPA_TO_UVA) {
@@ -600,7 +600,7 @@ int rppc_xlate_buffers(struct rppc_instance *rpc, struct rppc_function *func,
 				goto unmap;
 			}
 
-			rda = *(phys_addr_t *)kva;
+			rda = *(virt_addr_t *)kva;
 			uva = (virt_addr_t)func->translations[i].fd;
 			WARN_ON(!uva);
 			*(virt_addr_t *)kva = uva;

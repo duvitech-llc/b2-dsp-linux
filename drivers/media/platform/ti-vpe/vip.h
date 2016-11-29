@@ -31,6 +31,7 @@
 
 #include "vpdma.h"
 #include "vpdma_priv.h"
+#include "sc.h"
 
 #define VIP_INSTANCE1	1
 #define VIP_INSTANCE2	2
@@ -39,6 +40,12 @@
 #define VIP_SLICE1	0
 #define VIP_SLICE2	1
 #define VIP_NUM_SLICES	2
+
+/*
+ * Additionnal client identifiers used for VPDMA configuration descriptors
+ */
+#define VIP_SLICE1_CFD_SC_CLIENT	7
+#define VIP_SLICE2_CFD_SC_CLIENT	8
 
 #define VIP_PORTA	0
 #define VIP_PORTB	1
@@ -62,14 +69,13 @@
 /* buffer for one video frame */
 struct vip_buffer {
 	/* common v4l buffer stuff */
-	struct vb2_buffer	vb;
+	struct vb2_v4l2_buffer	vb;
 	struct list_head	list;
 	bool			drop;
 };
 
 /*
  * struct vip_fmt - VIP media bus format information
- * @name: V4L2 format description
  * @fourcc: V4L2 pixel format FCC identifier
  * @code: V4L2 media bus format code
  * @colorspace: V4L2 colorspace identifier
@@ -77,7 +83,6 @@ struct vip_buffer {
  * @vpdma_fmt: VPDMA data format per plane.
  */
 struct vip_fmt {
-	char	*name;
 	u32	fourcc;
 	u32	code;
 	u32	colorspace;
@@ -85,6 +90,18 @@ struct vip_fmt {
 	const struct vpdma_data_format *vpdma_fmt[VIP_MAX_PLANES];
 };
 
+/*
+ * The vip_parser_data structures contains the memory mapped
+ * info to access the parser registers.
+ */
+struct vip_parser_data {
+	void __iomem		*base;
+	struct resource		*res;
+
+	int			slice_id;
+
+	struct platform_device *pdev;
+};
 
 /*
  * The vip_shared structure contains data that is shared by both
@@ -117,7 +134,8 @@ struct vip_dev {
 	struct platform_device *pdev;
 	struct vip_shared	*shared;
 	struct resource		*res;
-	struct regmap		*syscon;
+	struct regmap		*syscon_pol;
+	u32			syscon_pol_offset;
 	int			instance_id;
 	int			slice_id;
 	int			num_ports;	/* count of open ports */
@@ -133,6 +151,12 @@ struct vip_dev {
 	struct vip_port		*ports[VIP_NUM_PORTS];
 
 	const char		*vip_name;
+	/* parser data handle */
+	struct vip_parser_data	*parser;
+	/* scaler data handle */
+	struct sc_data		*sc;
+	/* scaler port assignation */
+	int			sc_assigned;
 };
 
 /*
@@ -149,8 +173,11 @@ struct vip_port {
 	unsigned int		src_height;
 	struct v4l2_rect	c_rect;		/* crop rectangle */
 	struct v4l2_mbus_framefmt mbus_framefmt;
+	struct v4l2_mbus_framefmt try_mbus_framefmt;
 
 	struct vip_fmt		*fmt;		/* current format info */
+	/* Number of channels/streams configured */
+	int			num_streams_configured;
 	int			num_streams;	/* count of open streams */
 	struct vip_stream	*cap_streams[VIP_CAP_STREAMS_PER_PORT];
 	struct vip_stream	*vbi_streams[VIP_VBI_STREAMS_PER_PORT];
@@ -161,6 +188,16 @@ struct vip_port {
 	struct v4l2_of_endpoint *endpoint;
 	struct vip_fmt		*active_fmt[VIP_MAX_ACTIVE_FMT];
 	int			num_active_fmt;
+	/* have new shadow reg values */
+	bool			load_mmrs;
+	/* shadow reg addr/data block */
+	struct vpdma_buf	mmr_adb;
+	/* h coeff buffer */
+	struct vpdma_buf	sc_coeff_h;
+	/* v coeff buffer */
+	struct vpdma_buf	sc_coeff_v;
+	/* Show if scaler resource is available on this port */
+	bool			scaler;
 };
 
 /*
@@ -187,7 +224,8 @@ struct vip_stream {
 	int			vpdma_channels[VPDMA_MAX_CHANNELS];
 	struct vpdma_desc_list	desc_list;	/* DMA descriptor list */
 	struct vpdma_dtd	*write_desc;
-	void			*desc_next;	/* next unused desc_list addr */
+	/* next unused desc_list addr */
+	void			*desc_next;
 	struct vb2_queue	vb_vidq;
 };
 
@@ -224,6 +262,8 @@ enum sync_types {
 	EMBEDDED_SYNC_SINGLE_RGB_OR_YUV444 = 5,
 	DISCRETE_SYNC_SINGLE_RGB_24B = 10,
 };
+
+#define VIP_NOT_ASSIGNED	-1
 
 /*
  * Register offsets and field selectors

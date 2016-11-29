@@ -50,9 +50,6 @@
 #define	TMP102_TLOW_REG			0x02
 #define	TMP102_THIGH_REG		0x03
 
-/* TMP102 range is -55 to 150C -> we use -128 as a default invalid value */
-#define TMP102_NOTREADY			-129000
-
 struct tmp102 {
 	struct i2c_client *client;
 	struct device *hwmon_dev;
@@ -61,6 +58,7 @@ struct tmp102 {
 	u16 config_orig;
 	unsigned long last_update;
 	int temp[3];
+	bool first_time;
 };
 
 /* convert left adjusted 13-bit TMP102 register value to milliCelsius */
@@ -96,17 +94,18 @@ static struct tmp102 *tmp102_update_device(struct device *dev)
 				tmp102->temp[i] = tmp102_reg_to_mC(status);
 		}
 		tmp102->last_update = jiffies;
+		tmp102->first_time = false;
 	}
 	mutex_unlock(&tmp102->lock);
 	return tmp102;
 }
 
-static int tmp102_read_temp(void *dev, long *temp)
+static int tmp102_read_temp(void *dev, int *temp)
 {
 	struct tmp102 *tmp102 = tmp102_update_device(dev);
 
 	/* Is it too early even to return a conversion? */
-	if (tmp102->temp[0] == TMP102_NOTREADY) {
+	if (tmp102->first_time) {
 		dev_dbg(dev, "%s: Conversion not ready yet..\n", __func__);
 		return -EAGAIN;
 	}
@@ -124,7 +123,7 @@ static ssize_t tmp102_show_temp(struct device *dev,
 	struct tmp102 *tmp102 = tmp102_update_device(dev);
 
 	/* Is it too early even to return a read? */
-	if (tmp102->temp[sda->index] == TMP102_NOTREADY)
+	if (tmp102->first_time)
 		return -EAGAIN;
 
 	return sprintf(buf, "%d\n", tmp102->temp[sda->index]);
@@ -222,9 +221,7 @@ static int tmp102_probe(struct i2c_client *client,
 	}
 	tmp102->last_update = jiffies;
 	/* Mark that we are not ready with data until conversion is complete */
-	tmp102->temp[0] = TMP102_NOTREADY;
-	tmp102->temp[1] = TMP102_NOTREADY;
-	tmp102->temp[2] = TMP102_NOTREADY;
+	tmp102->first_time = true;
 	mutex_init(&tmp102->lock);
 
 	hwmon_dev = hwmon_device_register_with_groups(dev, client->name,

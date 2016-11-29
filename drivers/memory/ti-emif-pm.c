@@ -57,7 +57,7 @@ static int ti_emif_push_sram(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
 
-	sram_pool = of_get_named_gen_pool(np, "sram", 0);
+	sram_pool = of_gen_pool_get(np, "sram", 0);
 
 	if (!sram_pool) {
 		dev_err(dev, "Unable to get sram pool for ocmcram\n");

@@ -9,9 +9,10 @@ obj-$(CONFIG_CRYPTO_DEV_HIFN_795X) += hifn_795x.o
 obj-$(CONFIG_CRYPTO_DEV_IMGTEC_HASH) += img-hash.o
 obj-$(CONFIG_CRYPTO_DEV_IXP4XX) += ixp4xx_crypto.o
 obj-$(CONFIG_CRYPTO_DEV_KEYSTONE) += keystone-sa-driver.o
-keystone-sa-driver-objs := keystone-sa.o keystone-sa-utils.o \
-			   keystone-sa-lld.o keystone-sa-tbls.o
+keystone-sa-driver-objs := keystone-sa.o keystone-sa-lld.o \
+			   keystone-sa-utils.o
 obj-$(CONFIG_CRYPTO_DEV_MV_CESA) += mv_cesa.o
+obj-$(CONFIG_CRYPTO_DEV_MARVELL_CESA) += marvell/
 obj-$(CONFIG_CRYPTO_DEV_MXS_DCP) += mxs-dcp.o
 obj-$(CONFIG_CRYPTO_DEV_NIAGARA2) += n2_crypto.o
 n2_crypto-y := n2_core.o n2_asm.o
@@ -31,3 +32,4 @@ obj-$(CONFIG_CRYPTO_DEV_UX500) += ux500/
 obj-$(CONFIG_CRYPTO_DEV_QAT) += qat/
 obj-$(CONFIG_CRYPTO_DEV_QCE) += qce/
 obj-$(CONFIG_CRYPTO_DEV_VMX) += vmx/
+obj-$(CONFIG_CRYPTO_DEV_SUN4I_SS) += sunxi-ss/

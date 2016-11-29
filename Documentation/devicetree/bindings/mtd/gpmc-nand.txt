@@ -17,7 +17,7 @@ Required properties:
  - reg:		range id (CS number), base offset and length of the
 		NAND I/O space
  - interrupt-parent: must point to gpmc node
- - interrupts: gpmc interrupt
+ - interrupts:	Two interrupt specifiers, one for fifoevent, one for termcount.
 
 Optional properties:
 
@@ -39,7 +39,7 @@ Optional properties:
 
 		"prefetch-polled"	Prefetch polled mode (default)
 		"polled"		Polled mode, without prefetch
-		"prefetch-dma"		Prefetch enabled sDMA mode
+		"prefetch-dma"		Prefetch enabled DMA mode
 		"prefetch-irq"		Prefetch enabled irq mode
 
  - elm_id:	<deprecated> use "ti,elm-id" instead
@@ -48,6 +48,7 @@ Optional properties:
 		locating ECC errors for BCHx algorithms. SoC devices which have
 		ELM hardware engines should specify this device node in .dtsi
 		Using ELM for ECC error correction frees some CPU cycles.
+ - rb-gpios:	GPIO specifier for the ready/busy# pin.
 
 For inline partition table parsing (optional):
 
@@ -61,24 +62,24 @@ Example for an AM33xx board:
 		ti,hwmods = "gpmc";
 		reg = <0x50000000 0x36c>;
 		interrupts = <100>;
-		dmas = <&edma 52>;
-		dma-names = "rxtx";
 		gpmc,num-cs = <8>;
 		gpmc,num-waitpins = <2>;
 		#address-cells = <2>;
 		#size-cells = <1>;
 		ranges = <0 0 0x08000000 0x1000000>;	/* CS0 space, 16MB */
 		elm_id = <&elm>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
 
 		nand@0,0 {
 			compatible = "ti,omap2-nand";
 			reg = <0 0 4>;		/* CS0, offset 0, NAND I/O window 4 */
-			interrupts = <100>;
+			interrupt-parent = <&gpmc>;
+			interrupts = <0 IRQ_TYPE_NONE>, <1 IRQ_TYPE NONE>;
 			nand-bus-width = <16>;
 			ti,nand-ecc-opt = "bch8";
 			ti,nand-xfer-type = "polled";
-			interrupt-parent = <&gpmc>;
-			interrupts = <0>, <1>;
+			rb-gpios = <&gpmc 0 GPIO_ACTIVE_HIGH>; /* gpmc_wait0 */
 
 			gpmc,sync-clk-ps = <0>;
 			gpmc,cs-on-ns = <0>;

@@ -20,7 +20,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
-#include <linux/ti_sci_protocol.h>
+#include <linux/soc/ti/ti_sci_protocol.h>
 
 /**
  * struct ti_sci_reset_control - reset control structure

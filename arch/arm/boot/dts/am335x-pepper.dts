@@ -74,6 +74,7 @@
 	audio_codec: tlv320aic3106@1b {
 		compatible = "ti,tlv320aic3106";
 		reg = <0x1b>;
+		ai3x-micbias-vg = <0x2>;
 	};
 
 	accel: lis331dlh@1d {
@@ -153,7 +154,7 @@
 	ti,audio-routing =
 		"Headphone Jack",	"HPLOUT",
 		"Headphone Jack",	"HPROUT",
-		"LINE1L",		"Line In";
+		"MIC3L",		"Mic3L Switch";
 };
 
 &mcasp0 {
@@ -338,13 +339,6 @@
 	ti,non-removable;
 };
 
-&edma {
-	/* Map eDMA MMC2 Events from Crossbar */
-	ti,edma-xbar-event-map = /bits/ 16 <1 12
-                                            2 13>;
-};
-
-
 &mmc3 {
 	/* Wifi & Bluetooth on MMC #3 */
 	status = "okay";
@@ -353,8 +347,8 @@
 	vmmmc-supply = <&v3v3c_reg>;
 	bus-width = <4>;
 	ti,non-removable;
-	dmas = <&edma 12
-		&edma 13>;
+	dmas = <&edma_xbar 12 0 1
+		&edma_xbar 13 0 2>;
 	dma-names = "tx", "rx";
 };
 
@@ -438,41 +432,50 @@
 	regulators {
 		dcdc1_reg: regulator@0 {
 			/* VDD_1V8 system supply */
+			regulator-always-on;
 		};
 
 		dcdc2_reg: regulator@1 {
 			/* VDD_CORE voltage limits 0.95V - 1.26V with +/-4% tolerance */
 			regulator-name = "vdd_core";
 			regulator-min-microvolt = <925000>;
-			regulator-max-microvolt = <1325000>;
+			regulator-max-microvolt = <1150000>;
 			regulator-boot-on;
+			regulator-always-on;
 		};
 
 		dcdc3_reg: regulator@2 {
 			/* VDD_MPU voltage limits 0.95V - 1.1V with +/-4% tolerance */
 			regulator-name = "vdd_mpu";
 			regulator-min-microvolt = <925000>;
-			regulator-max-microvolt = <1150000>;
+			regulator-max-microvolt = <1325000>;
 			regulator-boot-on;
+			regulator-always-on;
 		};
 
 		ldo1_reg: regulator@3 {
 			/* VRTC 1.8V always-on supply */
+			regulator-name = "vrtc,vdds";
 			regulator-always-on;
 		};
 
 		ldo2_reg: regulator@4 {
 			/* 3.3V rail */
+			regulator-name = "vdd_3v3aux";
+			regulator-always-on;
 		};
 
 		ldo3_reg: regulator@5 {
 			/* VDD_3V3A 3.3V rail */
+			regulator-name = "vdd_3v3a";
 			regulator-min-microvolt = <3300000>;
 			regulator-max-microvolt = <3300000>;
 		};
 
 		ldo4_reg: regulator@6 {
 			/* VDD_3V3B 3.3V rail */
+			regulator-name = "vdd_3v3b";
+			regulator-always-on;
 		};
 	};
 };

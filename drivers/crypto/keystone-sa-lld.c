@@ -1,7 +1,7 @@
 /*
  * Keystone crypto accelerator driver
  *
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com
+ * Copyright (C) 2015, 2016 Texas Instruments Incorporated - http://www.ti.com
  *
  * Authors:	Sandeep Nair
  *		Vitaly Andrianov
@@ -23,18 +23,19 @@
 #include <linux/crypto.h>
 #include <linux/cryptohash.h>
 
-#include <crypto/algapi.h>
-#include <crypto/aead.h>
-#include <crypto/authenc.h>
-#include <crypto/hash.h>
-#include <crypto/internal/hash.h>
 #include <crypto/aes.h>
-#include <crypto/des.h>
 #include <crypto/sha.h>
 #include <crypto/md5.h>
 
 #include "keystone-sa.h"
 #include "keystone-sa-hlp.h"
+
+/* Byte offset for key in encryption security context */
+#define SC_ENC_KEY_OFFSET (1 + 27 + 4)
+/* Byte offset for Aux-1 in encryption security context */
+#define SC_ENC_AUX1_OFFSET (1 + 27 + 4 + 32)
+
+struct sa_eng_mci_tbl sa_mci_tbl;
 
 /* Perform 16 byte swizzling */
 void sa_swiz_128(u8 *in, u8 *out, u16 len)
@@ -42,7 +43,7 @@ void sa_swiz_128(u8 *in, u8 *out, u16 len)
 	u8 data[16];
 	int i, j;
 
-	for (i = 0; i < len; i += 16) {
+	for (i = 0; i < len - 15; i += 16) {
 		memcpy(data, &in[i], 16);
 		for (j = 0; j < 16; j++)
 			out[i + j] = data[15 - j];
@@ -57,9 +58,6 @@ void sa_conv_calg_to_salg(const char *cra_name, int *ealg_id, int *aalg_id)
 
 	if (!strcmp(cra_name, "authenc(hmac(sha1),cbc(aes))")) {
 		*ealg_id = SA_EALG_ID_AES_CBC;
-		*aalg_id = SA_AALG_ID_HMAC_SHA1;
-	} else if (!strcmp(cra_name, "authenc(hmac(sha1),ecb(cipher_null))")) {
-		*ealg_id = SA_EALG_ID_NULL;
 		*aalg_id = SA_AALG_ID_HMAC_SHA1;
 	} else if (!strcmp(cra_name, "authenc(hmac(sha1),cbc(des3_ede))")) {
 		*ealg_id = SA_EALG_ID_3DES_CBC;
@@ -78,43 +76,44 @@ void sa_conv_calg_to_salg(const char *cra_name, int *ealg_id, int *aalg_id)
 		*aalg_id = SA_AALG_ID_HMAC_SHA1;
 	} else if (!strcmp(cra_name, "xcbc(aes)")) {
 		*aalg_id = SA_AALG_ID_AES_XCBC;
-	}
+	} else
+		pr_err("%s - unsupported cra_name %s\n", __func__, cra_name);
 }
 
+struct sa_eng_info sa_eng_info_tbl[SA_ALG_ID_LAST] = {
+	[SA_EALG_ID_NONE]	= { SA_ENG_ID_NONE, 0},
+	[SA_EALG_ID_NULL]	= { SA_ENG_ID_NONE, 0},
+	[SA_EALG_ID_AES_CTR]	= { SA_ENG_ID_NONE, 0},
+	[SA_EALG_ID_AES_F8]	= { SA_ENG_ID_NONE, 0},
+	[SA_EALG_ID_AES_CBC]	= { SA_ENG_ID_EM1, SA_CTX_ENC_TYPE1_SZ},
+	[SA_EALG_ID_DES_CBC]	= { SA_ENG_ID_EM1, SA_CTX_ENC_TYPE1_SZ},
+	[SA_EALG_ID_3DES_CBC]	= { SA_ENG_ID_EM1, SA_CTX_ENC_TYPE1_SZ},
+	[SA_EALG_ID_CCM]	= { SA_ENG_ID_NONE, 0},
+	[SA_EALG_ID_GCM]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_NULL]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_MD5]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_SHA1]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_SHA2_224]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_SHA2_256]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_HMAC_MD5]	= { SA_ENG_ID_AM1, SA_CTX_AUTH_TYPE2_SZ},
+	[SA_AALG_ID_HMAC_SHA1]	= { SA_ENG_ID_AM1, SA_CTX_AUTH_TYPE2_SZ},
+	[SA_AALG_ID_HMAC_SHA2_224] = { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_HMAC_SHA2_256] = { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_GMAC]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_CMAC]	= {SA_ENG_ID_EM1, SA_CTX_AUTH_TYPE1_SZ},
+	[SA_AALG_ID_CBC_MAC]	= { SA_ENG_ID_NONE, 0},
+	[SA_AALG_ID_AES_XCBC]	= {SA_ENG_ID_EM1, SA_CTX_AUTH_TYPE1_SZ}
+};
+
 /* Given an algorithm ID get the engine details */
-void sa_get_engine_info(int alg_id, struct sa_eng_info *info)
+struct sa_eng_info *sa_get_engine_info(int alg_id)
 {
-	switch (alg_id) {
-	case SA_EALG_ID_AES_CBC:
-	case SA_EALG_ID_3DES_CBC:
-	case SA_EALG_ID_DES_CBC:
-		info->eng_id = SA_ENG_ID_EM1;
-		info->sc_size = SA_CTX_ENC_TYPE1_SZ;
-		break;
+	if (alg_id < SA_ALG_ID_LAST)
+		return &sa_eng_info_tbl[alg_id];
 
-	case SA_EALG_ID_NULL:
-		info->eng_id = SA_ENG_ID_NONE;
-		info->sc_size = 0;
-		break;
+	pr_err("%s: unsupported algo\n", __func__);
 
-	case SA_AALG_ID_HMAC_SHA1:
-	case SA_AALG_ID_HMAC_MD5:
-		info->eng_id = SA_ENG_ID_AM1;
-		info->sc_size = SA_CTX_AUTH_TYPE2_SZ;
-		break;
-
-	case SA_AALG_ID_AES_XCBC:
-	case SA_AALG_ID_CMAC:
-		info->eng_id = SA_ENG_ID_EM1;
-		info->sc_size = SA_CTX_AUTH_TYPE1_SZ;
-		break;
-
-	default:
-		pr_err("%s: unsupported algo\n", __func__);
-		info->eng_id = SA_ENG_ID_NONE;
-		info->sc_size = 0;
-		break;
-	}
+	return &sa_eng_info_tbl[SA_EALG_ID_NONE];
 }
 
 /* Given an algorithm get the hash size */
@@ -167,7 +166,7 @@ static inline void md5_init(u32 *hash)
 }
 
 /* Generate HMAC-MD5 intermediate Hash */
-void sa_hmac_md5_get_pad(const u8 *key, u16 key_sz, u32 *ipad, u32 *opad)
+static void sa_hmac_md5_get_pad(const u8 *key, u16 key_sz, u32 *ipad, u32 *opad)
 {
 	u8 k_ipad[MD5_MESSAGE_BYTES];
 	u8 k_opad[MD5_MESSAGE_BYTES];
@@ -193,6 +192,7 @@ void sa_hmac_md5_get_pad(const u8 *key, u16 key_sz, u32 *ipad, u32 *opad)
 }
 
 /* Generate HMAC-SHA1 intermediate Hash */
+static
 void sa_hmac_sha1_get_pad(const u8 *key, u16 key_sz, u32 *ipad, u32 *opad)
 {
 	u32 ws[SHA_WORKSPACE_WORDS];
@@ -224,22 +224,6 @@ void sa_hmac_sha1_get_pad(const u8 *key, u16 key_sz, u32 *ipad, u32 *opad)
 	for (i = 0; i < SHA_DIGEST_WORDS; i++)
 		opad[i] = cpu_to_be32(opad[i]);
 }
-
-/* Derive GHASH to be used in the GCM algorithm */
-void sa_calc_ghash(const u8 *key, u16 key_sz, u8 *ghash)
-{
-}
-
-/* Generate HMAC-SHA224 intermediate Hash */
-void sa_hmac_sha224_get_pad(const u8 *key, u16 key_sz, u32 *ipad, u32 *opad)
-{
-}
-
-/* Generate HMAC-SHA256 intermediate Hash */
-void sa_hmac_sha256_get_pad(const u8 *key, u16 key_sz, u32 *ipad, u32 *opad)
-{
-}
-
 
 /* Derive the inverse key used in AES-CBC decryption operation */
 static inline int sa_aes_inv_key(u8 *inv_key, const u8 *key, u16 key_sz)
@@ -274,16 +258,10 @@ static inline int sa_aes_inv_key(u8 *inv_key, const u8 *key, u16 key_sz)
 	return 0;
 }
 
-
 /* Set Security context for the encryption engine */
 int sa_set_sc_enc(u16 alg_id, const u8 *key, u16 key_sz,
-				u16 aad_len, u8 enc, u8 *sc_buf)
+		  u16 aad_len, u8 enc, u8 *sc_buf)
 {
-/* Byte offset for key in encryption security context */
-#define SC_ENC_KEY_OFFSET (1 + 27 + 4)
-/* Byte offset for Aux-1 in encryption security context */
-#define SC_ENC_AUX1_OFFSET (1 + 27 + 4 + 32)
-
 	u8 ghash[16]; /* AES block size */
 	const u8 *mci = NULL;
 	/* Convert the key size (16/24/32) to the key size index (0/1/2) */
@@ -295,48 +273,47 @@ int sa_set_sc_enc(u16 alg_id, const u8 *key, u16 key_sz,
 	/* Select the mode control instruction */
 	switch (alg_id) {
 	case SA_EALG_ID_AES_CBC:
-		mci = (enc) ? sa_eng_aes_enc_mci_tbl[SA_ENG_ALGO_CBC][key_idx] :
-			sa_eng_aes_dec_mci_tbl[SA_ENG_ALGO_CBC][key_idx];
+		mci = (enc) ? sa_mci_tbl.aes_enc[SA_ENG_ALGO_CBC][key_idx] :
+			sa_mci_tbl.aes_dec[SA_ENG_ALGO_CBC][key_idx];
 		break;
 
 	case SA_EALG_ID_CCM:
-		mci = (enc) ? sa_eng_aes_enc_mci_tbl[SA_ENG_ALGO_CCM][key_idx] :
-			sa_eng_aes_dec_mci_tbl[SA_ENG_ALGO_CCM][key_idx];
+		mci = (enc) ? sa_mci_tbl.aes_enc[SA_ENG_ALGO_CCM][key_idx] :
+			sa_mci_tbl.aes_dec[SA_ENG_ALGO_CCM][key_idx];
 		break;
 
 	case SA_EALG_ID_AES_F8:
-		mci = sa_eng_aes_enc_mci_tbl[SA_ENG_ALGO_F8][key_idx];
+		mci = sa_mci_tbl.aes_enc[SA_ENG_ALGO_F8][key_idx];
 		break;
 
 	case SA_EALG_ID_AES_CTR:
-		mci = sa_eng_aes_enc_mci_tbl[SA_ENG_ALGO_CTR][key_idx];
+		mci = sa_mci_tbl.aes_enc[SA_ENG_ALGO_CTR][key_idx];
 		break;
 
 	case SA_EALG_ID_GCM:
-		mci = (enc) ? sa_eng_aes_enc_mci_tbl[SA_ENG_ALGO_GCM][key_idx] :
-			sa_eng_aes_dec_mci_tbl[SA_ENG_ALGO_GCM][key_idx];
+		mci = (enc) ? sa_mci_tbl.aes_enc[SA_ENG_ALGO_GCM][key_idx] :
+			sa_mci_tbl.aes_dec[SA_ENG_ALGO_GCM][key_idx];
 		/* Set AAD length at byte offset 23 in Aux-1 */
 		sc_buf[SC_ENC_AUX1_OFFSET + 23] = (aad_len << 3);
 		/* fall through to GMAC */
 
 	case SA_AALG_ID_GMAC:
-		sa_calc_ghash(key, (key_sz << 3), ghash);
 		/* copy GCM Hash in Aux-1 */
 		memcpy(&sc_buf[SC_ENC_AUX1_OFFSET], ghash, 16);
 		break;
 
 	case SA_AALG_ID_AES_XCBC:
 	case SA_AALG_ID_CMAC:
-		mci = sa_eng_aes_enc_mci_tbl[SA_ENG_ALGO_CMAC][key_idx];
+		mci = sa_mci_tbl.aes_enc[SA_ENG_ALGO_CMAC][key_idx];
 		break;
 
 	case SA_AALG_ID_CBC_MAC:
-		mci = sa_eng_aes_enc_mci_tbl[SA_ENG_ALGO_CBCMAC][key_idx];
+		mci = sa_mci_tbl.aes_enc[SA_ENG_ALGO_CBCMAC][key_idx];
 		break;
 
 	case SA_EALG_ID_3DES_CBC:
-		mci = (enc) ? sa_eng_3des_enc_mci_tbl[SA_ENG_ALGO_CBC] :
-			sa_eng_3des_dec_mci_tbl[SA_ENG_ALGO_CBC];
+		mci = (enc) ? sa_mci_tbl._3des_enc[SA_ENG_ALGO_CBC] :
+			sa_mci_tbl._3des_dec[SA_ENG_ALGO_CBC];
 		break;
 	}
 
@@ -352,7 +329,7 @@ int sa_set_sc_enc(u16 alg_id, const u8 *key, u16 key_sz,
 	/* For AES-XCBC-MAC get the subkey */
 	else if (alg_id == SA_AALG_ID_AES_XCBC) {
 		if (sa_aes_xcbc_subkey(&sc_buf[SC_ENC_KEY_OFFSET], NULL,
-					NULL, key, key_sz))
+				       NULL, key, key_sz))
 			return -1;
 	}
 	/* For all other cases: key is used */
@@ -376,32 +353,42 @@ void sa_set_sc_auth(u16 alg_id, const u8 *key, u16 key_sz, u8 *sc_buf)
 
 	switch (alg_id) {
 	case SA_AALG_ID_MD5:
-		/* Auth SW ctrl word: bit[4]=1 (basic hash)
-		 * bit[3:0]=1 (MD5 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=1 (basic hash)
+		 * bit[3:0]=1 (MD5 operation)
+		 */
 		sc_buf[1] |= (0x10 | 0x1);
 		break;
 
 	case SA_AALG_ID_SHA1:
-		/* Auth SW ctrl word: bit[4]=1 (basic hash)
-		 * bit[3:0]=2 (SHA1 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=1 (basic hash)
+		 * bit[3:0]=2 (SHA1 operation)
+		 */
 		sc_buf[1] |= (0x10 | 0x2);
 		break;
 
 	case SA_AALG_ID_SHA2_224:
-		/* Auth SW ctrl word: bit[4]=1 (basic hash)
-		 * bit[3:0]=3 (SHA2-224 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=1 (basic hash)
+		 * bit[3:0]=3 (SHA2-224 operation)
+		 */
 		sc_buf[1] |= (0x10 | 0x3);
 		break;
 
 	case SA_AALG_ID_SHA2_256:
-		/* Auth SW ctrl word: bit[4]=1 (basic hash)
-		 * bit[3:0]=4 (SHA2-256 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=1 (basic hash)
+		 * bit[3:0]=4 (SHA2-256 operation)
+		 */
 		sc_buf[1] |= (0x10 | 0x4);
 		break;
 
 	case SA_AALG_ID_HMAC_MD5:
-		/* Auth SW ctrl word: bit[4]=0 (HMAC)
-		 * bit[3:0]=1 (MD5 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=0 (HMAC)
+		 * bit[3:0]=1 (MD5 operation)
+		 */
 		sc_buf[1] |= 0x1;
 		keyed_mac = 1;
 		mac_sz = MD5_DIGEST_SIZE;
@@ -409,8 +396,10 @@ void sa_set_sc_auth(u16 alg_id, const u8 *key, u16 key_sz, u8 *sc_buf)
 		break;
 
 	case SA_AALG_ID_HMAC_SHA1:
-		/* Auth SW ctrl word: bit[4]=0 (HMAC)
-		 * bit[3:0]=2 (SHA1 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=0 (HMAC)
+		 * bit[3:0]=2 (SHA1 operation)
+		 */
 		sc_buf[1] |= 0x2;
 		keyed_mac = 1;
 		mac_sz = SHA1_DIGEST_SIZE;
@@ -418,21 +407,23 @@ void sa_set_sc_auth(u16 alg_id, const u8 *key, u16 key_sz, u8 *sc_buf)
 		break;
 
 	case SA_AALG_ID_HMAC_SHA2_224:
-		/* Auth SW ctrl word: bit[4]=0 (HMAC)
-		 * bit[3:0]=3 (SHA2-224 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=0 (HMAC)
+		 * bit[3:0]=3 (SHA2-224 operation)
+		 */
 		sc_buf[1] |= 0x3;
 		keyed_mac = 1;
 		mac_sz = SHA224_DIGEST_SIZE;
-		sa_hmac_sha224_get_pad(key, key_sz, ipad, opad);
 		break;
 
 	case SA_AALG_ID_HMAC_SHA2_256:
-		/* Auth SW ctrl word: bit[4]=0 (HMAC)
-		 * bit[3:0]=4 (SHA2-256 operation)*/
+		/*
+		 * Auth SW ctrl word: bit[4]=0 (HMAC)
+		 * bit[3:0]=4 (SHA2-256 operation)
+		 */
 		sc_buf[1] |= 0x4;
 		keyed_mac = 1;
 		mac_sz = SHA256_DIGEST_SIZE;
-		sa_hmac_sha256_get_pad(key, key_sz, ipad, opad);
 		break;
 	}
 
@@ -444,5 +435,3 @@ void sa_set_sc_auth(u16 alg_id, const u8 *key, u16 key_sz, u8 *sc_buf)
 		memcpy(&sc_buf[64], opad, mac_sz);
 	}
 }
-
-

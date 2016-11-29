@@ -77,217 +77,143 @@ static const struct v4l2_fract
 #define CAL_NUM_INPUT 1
 #define CAL_NUM_CONTEXT 2
 
+#define bytes_per_line(pixel, bpp) (ALIGN(pixel * bpp, 16))
+
+#define reg_read(dev, offset) ioread32(dev->base + offset)
+#define reg_write(dev, offset, val) iowrite32(val, dev->base + offset)
+
+#define reg_read_field(dev, offset, mask) get_field(reg_read(dev, offset), \
+						    mask)
+#define reg_write_field(dev, offset, field, mask) { \
+	u32 val = reg_read(dev, offset); \
+	set_field(&val, field, mask); \
+	reg_write(dev, offset, val); }
+
 /* ------------------------------------------------------------------
-	Basic structures
-   ------------------------------------------------------------------*/
+ *	Basic structures
+ * ------------------------------------------------------------------
+ */
 
 struct cal_fmt {
-	const char *name;
 	u32	fourcc;
 	u32	code;
-	u32	colorspace;
 	u8	depth;
-	bool	supported;
-	u32	index;
 };
 
-static const struct cal_fmt formats[] = {
+static struct cal_fmt cal_formats[] = {
 	{
-		.name		= "YUV 4:2:2 packed, YCbYCr",
 		.fourcc		= V4L2_PIX_FMT_YUYV,
 		.code		= MEDIA_BUS_FMT_YUYV8_2X8,
-		.colorspace	= V4L2_COLORSPACE_SMPTE170M,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "YUV 4:2:2 packed, CbYCrY",
 		.fourcc		= V4L2_PIX_FMT_UYVY,
 		.code		= MEDIA_BUS_FMT_UYVY8_2X8,
-		.colorspace	= V4L2_COLORSPACE_SMPTE170M,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "YUV 4:2:2 packed, YCrYCb",
 		.fourcc		= V4L2_PIX_FMT_YVYU,
 		.code		= MEDIA_BUS_FMT_YVYU8_2X8,
-		.colorspace	= V4L2_COLORSPACE_SMPTE170M,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "4YUV 4:2:2 packed, CrYCbY",
 		.fourcc		= V4L2_PIX_FMT_VYUY,
 		.code		= MEDIA_BUS_FMT_VYUY8_2X8,
-		.colorspace	= V4L2_COLORSPACE_SMPTE170M,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RGB565 (LE)",
 		.fourcc		= V4L2_PIX_FMT_RGB565, /* gggbbbbb rrrrrggg */
 		.code		= MEDIA_BUS_FMT_RGB565_2X8_LE,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RGB565 (BE)",
 		.fourcc		= V4L2_PIX_FMT_RGB565X, /* rrrrrggg gggbbbbb */
 		.code		= MEDIA_BUS_FMT_RGB565_2X8_BE,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RGB555 (LE)",
 		.fourcc		= V4L2_PIX_FMT_RGB555, /* gggbbbbb arrrrrgg */
 		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_LE,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RGB555 (BE)",
 		.fourcc		= V4L2_PIX_FMT_RGB555X, /* arrrrrgg gggbbbbb */
 		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_BE,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RGB24 (LE)",
 		.fourcc		= V4L2_PIX_FMT_RGB24, /* rgb */
 		.code		= MEDIA_BUS_FMT_RGB888_2X12_LE,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 24,
-		.supported	= false,
 	}, {
-		.name		= "RGB24 (BE)",
 		.fourcc		= V4L2_PIX_FMT_BGR24, /* bgr */
 		.code		= MEDIA_BUS_FMT_RGB888_2X12_BE,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 24,
-		.supported	= false,
 	}, {
-		.name		= "RGB32",
 		.fourcc		= V4L2_PIX_FMT_RGB32, /* argb */
 		.code		= MEDIA_BUS_FMT_ARGB8888_1X32,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 32,
-		.supported	= false,
 	}, {
-		.name		= "RAW8 BGGR",
 		.fourcc		= V4L2_PIX_FMT_SBGGR8,
 		.code		= MEDIA_BUS_FMT_SBGGR8_1X8,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 8,
-		.supported	= false,
 	}, {
-		.name		= "RAW8 GBRG",
 		.fourcc		= V4L2_PIX_FMT_SGBRG8,
 		.code		= MEDIA_BUS_FMT_SGBRG8_1X8,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 8,
-		.supported	= false,
 	}, {
-		.name		= "RAW8 GRBG",
 		.fourcc		= V4L2_PIX_FMT_SGRBG8,
 		.code		= MEDIA_BUS_FMT_SGRBG8_1X8,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 8,
-		.supported	= false,
 	}, {
-		.name		= "RAW8 RGGB",
 		.fourcc		= V4L2_PIX_FMT_SRGGB8,
 		.code		= MEDIA_BUS_FMT_SRGGB8_1X8,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 8,
-		.supported	= false,
 	}, {
-		.name		= "RAW10 BGGR",
 		.fourcc		= V4L2_PIX_FMT_SBGGR10,
 		.code		= MEDIA_BUS_FMT_SBGGR10_1X10,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RAW10 GBRG",
 		.fourcc		= V4L2_PIX_FMT_SGBRG10,
 		.code		= MEDIA_BUS_FMT_SGBRG10_1X10,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RAW10 GRBG",
 		.fourcc		= V4L2_PIX_FMT_SGRBG10,
 		.code		= MEDIA_BUS_FMT_SGRBG10_1X10,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RAW10 RGGB",
 		.fourcc		= V4L2_PIX_FMT_SRGGB10,
 		.code		= MEDIA_BUS_FMT_SRGGB10_1X10,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RAW12 BGGR",
 		.fourcc		= V4L2_PIX_FMT_SBGGR12,
 		.code		= MEDIA_BUS_FMT_SBGGR12_1X12,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RAW12 GBRG",
 		.fourcc		= V4L2_PIX_FMT_SGBRG12,
 		.code		= MEDIA_BUS_FMT_SGBRG12_1X12,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RAW12 GRBG",
 		.fourcc		= V4L2_PIX_FMT_SGRBG12,
 		.code		= MEDIA_BUS_FMT_SGRBG12_1X12,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	}, {
-		.name		= "RAW12 RGGB",
 		.fourcc		= V4L2_PIX_FMT_SRGGB12,
 		.code		= MEDIA_BUS_FMT_SRGGB12_1X12,
-		.colorspace	= V4L2_COLORSPACE_SRGB,
 		.depth		= 16,
-		.supported	= false,
 	},
 };
 
-static const struct cal_fmt *find_format_by_pix(u32 pixelformat)
+/*  Print Four-character-code (FOURCC) */
+static char *fourcc_to_str(u32 fmt)
 {
-	const struct cal_fmt *fmt;
-	unsigned int k;
+	static char code[5];
 
-	for (k = 0; k < ARRAY_SIZE(formats); k++) {
-		fmt = &formats[k];
-		if (fmt->fourcc == pixelformat)
-			return fmt;
-	}
+	code[0] = (unsigned char)(fmt & 0xff);
+	code[1] = (unsigned char)((fmt >> 8) & 0xff);
+	code[2] = (unsigned char)((fmt >> 16) & 0xff);
+	code[3] = (unsigned char)((fmt >> 24) & 0xff);
+	code[4] = '\0';
 
-	return NULL;
-}
-
-static const struct cal_fmt *find_format_by_code(u32 code)
-{
-	const struct cal_fmt *fmt;
-	unsigned int k;
-
-	for (k = 0; k < ARRAY_SIZE(formats); k++) {
-		fmt = &formats[k];
-		if (fmt->code == code)
-			return fmt;
-	}
-
-	return NULL;
+	return code;
 }
 
 /* buffer for one video frame */
 struct cal_buffer {
 	/* common v4l buffer stuff -- must be first */
-	struct vb2_buffer	vb;
+	struct vb2_v4l2_buffer	vb;
 	struct list_head	list;
 	const struct cal_fmt	*fmt;
 };
@@ -327,7 +253,13 @@ struct cal_dev {
 	struct platform_device	*pdev;
 	struct v4l2_device	v4l2_dev;
 
-	struct cm_data		*cm;		/* Control Module handle */
+	/* Controller flags for special cases */
+	unsigned int		flags;
+
+	/* Control Module handle */
+	struct cm_data		*cm;
+	/* Camera Core Module handle */
+	struct cc_data		*cc[CAL_NUM_CSI2_PORTS];
 
 	struct cal_ctx		*ctx[CAL_NUM_CONTEXT];
 };
@@ -366,11 +298,17 @@ struct cal_ctx {
 
 	/* video capture */
 	const struct cal_fmt	*fmt;
+	/* Used to store current pixel format */
+	struct v4l2_format		v_fmt;
+	/* Used to store current mbus frame format */
+	struct v4l2_mbus_framefmt	m_fmt;
+
+	/* Current subdev enumerated format */
+	struct cal_fmt		*active_fmt[ARRAY_SIZE(cal_formats)];
+	int			num_active_fmt;
+
 	struct v4l2_fract	timeperframe;
-	unsigned int		width, height;
-	unsigned int		field;
 	unsigned int		sequence;
-	unsigned int		pixelsize;
 	unsigned int		external_rate;
 	struct vb2_queue	vb_vidq;
 	unsigned int		seq_count;
@@ -383,50 +321,57 @@ struct cal_ctx {
 	struct cal_buffer	*next_frm;
 };
 
+struct cal_of_data {
+	unsigned int flags;
+};
+
+static const struct cal_fmt *find_format_by_pix(struct cal_ctx *ctx,
+						u32 pixelformat)
+{
+	const struct cal_fmt *fmt;
+	unsigned int k;
+
+	for (k = 0; k < ctx->num_active_fmt; k++) {
+		fmt = ctx->active_fmt[k];
+		if (fmt->fourcc == pixelformat)
+			return fmt;
+	}
+
+	return NULL;
+}
+
+static const struct cal_fmt *find_format_by_code(struct cal_ctx *ctx,
+						 u32 code)
+{
+	const struct cal_fmt *fmt;
+	unsigned int k;
+
+	for (k = 0; k < ctx->num_active_fmt; k++) {
+		fmt = ctx->active_fmt[k];
+		if (fmt->code == code)
+			return fmt;
+	}
+
+	return NULL;
+}
+
 static inline struct cal_ctx *notifier_to_ctx(struct v4l2_async_notifier *n)
 {
 	return container_of(n, struct cal_ctx, notifier);
 }
 
-/* register field read/write helpers */
-static inline int get_field(u32 value, u32 mask, int shift)
+static inline int get_field(u32 value, u32 mask)
 {
-	return (value & (mask << shift)) >> shift;
+	return (value & mask) >> __ffs(mask);
 }
 
-static inline void write_field(u32 *valp, u32 field, u32 mask, int shift)
+static inline void set_field(u32 *valp, u32 field, u32 mask)
 {
 	u32 val = *valp;
 
-	val &= ~(mask << shift);
-	val |= (field & mask) << shift;
+	val &= ~mask;
+	val |= (field << __ffs(mask)) & mask;
 	*valp = val;
-}
-
-static inline u32 cal_read(struct cal_dev *dev, int offset)
-{
-	return ioread32(dev->base + offset);
-}
-
-static inline void cal_write(struct cal_dev *dev, int offset, u32 value)
-{
-	iowrite32(value, dev->base + offset);
-}
-
-static inline int
-cal_read_field(struct cal_dev *dev, int offset, u32 mask, int shift)
-{
-	return get_field(cal_read(dev, offset), mask, shift);
-}
-
-static inline void cal_write_field(struct cal_dev *dev, int offset, u32 field,
-				   u32 mask, int shift)
-{
-	u32 val = cal_read(dev, offset);
-
-	write_field(&val, field, mask, shift);
-
-	cal_write(dev, offset, val);
 }
 
 /*
@@ -437,106 +382,65 @@ static struct cm_data *cm_create(struct cal_dev *dev)
 	struct platform_device *pdev = dev->pdev;
 	struct cm_data *cm;
 
-	cal_dbg(3, dev, "cm_create\n");
-
 	cm = devm_kzalloc(&pdev->dev, sizeof(*cm), GFP_KERNEL);
 	if (!cm)
 		return ERR_PTR(-ENOMEM);
 
 	cm->res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 						"camerrx_control");
-	if (!cm->res)
-		return ERR_PTR(-ENODEV);
-
-	cal_dbg(1, dev, "ioresource %s at  %pa - %pa\n",
-		cm->res->name, &cm->res->start, &cm->res->end);
-
 	cm->base = devm_ioremap_resource(&pdev->dev, cm->res);
-	if (!cm->base) {
+	if (IS_ERR(cm->base)) {
 		cal_err(dev, "failed to ioremap\n");
-		return ERR_PTR(-ENOMEM);
+		return ERR_CAST(cm->base);
 	}
 
+	cal_dbg(1, dev, "ioresource %s at %pa - %pa\n",
+		cm->res->name, &cm->res->start, &cm->res->end);
+
 	return cm;
-}
-
-static inline u32 cm_read(struct cm_data *dev, int offset)
-{
-	return ioread32(dev->base + offset);
-}
-
-static inline void cm_write(struct cm_data *dev, int offset, u32 value)
-{
-	iowrite32(value, dev->base + offset);
-}
-
-static inline void cm_write_field(struct cm_data *dev, int offset, u32 field,
-				  u32 mask, int shift)
-{
-	u32 val = cm_read(dev, offset);
-
-	write_field(&val, field, mask, shift);
-
-	cm_write(dev, offset, val);
 }
 
 static void camerarx_phy_enable(struct cal_ctx *ctx)
 {
 	u32 val;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
 	if (!ctx->dev->cm->base) {
 		ctx_err(ctx, "cm not mapped\n");
 		return;
 	}
 
-	val = cm_read(ctx->dev->cm, CM_CTRL_CORE_CAMERRX_CONTROL);
+	val = reg_read(ctx->dev->cm, CM_CTRL_CORE_CAMERRX_CONTROL);
 	if (ctx->csi2_port == 1) {
-		write_field(&val, 1, CM_CAMERRX_CTRL_CSI0_CTRLCLKEN_MASK,
-			    CM_CAMERRX_CTRL_CSI0_CTRLCLKEN_SHIFT);
-		write_field(&val, 0, CM_CAMERRX_CTRL_CSI0_CAMMODE_MASK,
-			    CM_CAMERRX_CTRL_CSI0_CAMMODE_SHIFT);
+		set_field(&val, 1, CM_CAMERRX_CTRL_CSI0_CTRLCLKEN_MASK);
+		set_field(&val, 0, CM_CAMERRX_CTRL_CSI0_CAMMODE_MASK);
 		/* enable all lanes by default */
-		write_field(&val, 0xf, CM_CAMERRX_CTRL_CSI0_LANEENABLE_MASK,
-			    CM_CAMERRX_CTRL_CSI0_LANEENABLE_SHIFT);
-		write_field(&val, 1, CM_CAMERRX_CTRL_CSI0_MODE_MASK,
-			    CM_CAMERRX_CTRL_CSI0_MODE_SHIFT);
+		set_field(&val, 0xf, CM_CAMERRX_CTRL_CSI0_LANEENABLE_MASK);
+		set_field(&val, 1, CM_CAMERRX_CTRL_CSI0_MODE_MASK);
 	} else if (ctx->csi2_port == 2) {
-		write_field(&val, 1, CM_CAMERRX_CTRL_CSI1_CTRLCLKEN_MASK,
-			    CM_CAMERRX_CTRL_CSI0_CTRLCLKEN_SHIFT);
-		write_field(&val, 0, CM_CAMERRX_CTRL_CSI1_CAMMODE_MASK,
-			    CM_CAMERRX_CTRL_CSI0_CAMMODE_SHIFT);
+		set_field(&val, 1, CM_CAMERRX_CTRL_CSI1_CTRLCLKEN_MASK);
+		set_field(&val, 0, CM_CAMERRX_CTRL_CSI1_CAMMODE_MASK);
 		/* enable all lanes by default */
-		write_field(&val, 0x3, CM_CAMERRX_CTRL_CSI1_LANEENABLE_MASK,
-			    CM_CAMERRX_CTRL_CSI0_LANEENABLE_SHIFT);
-		write_field(&val, 1, CM_CAMERRX_CTRL_CSI1_MODE_MASK,
-			    CM_CAMERRX_CTRL_CSI0_MODE_SHIFT);
+		set_field(&val, 0x3, CM_CAMERRX_CTRL_CSI1_LANEENABLE_MASK);
+		set_field(&val, 1, CM_CAMERRX_CTRL_CSI1_MODE_MASK);
 	}
-	cm_write(ctx->dev->cm, CM_CTRL_CORE_CAMERRX_CONTROL, val);
+	reg_write(ctx->dev->cm, CM_CTRL_CORE_CAMERRX_CONTROL, val);
 }
 
 static void camerarx_phy_disable(struct cal_ctx *ctx)
 {
-	ctx_dbg(3, ctx, "%s\n", __func__);
+	u32 val;
 
 	if (!ctx->dev->cm->base) {
 		ctx_err(ctx, "cm not mapped\n");
 		return;
 	}
 
+	val = reg_read(ctx->dev->cm, CM_CTRL_CORE_CAMERRX_CONTROL);
 	if (ctx->csi2_port == 1)
-		cm_write_field(ctx->dev->cm,
-			       CM_CTRL_CORE_CAMERRX_CONTROL,
-			       0x0,
-			       CM_CAMERRX_CTRL_CSI0_CTRLCLKEN_MASK,
-			       CM_CAMERRX_CTRL_CSI0_CTRLCLKEN_SHIFT);
+		set_field(&val, 0x0, CM_CAMERRX_CTRL_CSI0_CTRLCLKEN_MASK);
 	else if (ctx->csi2_port == 2)
-		cm_write_field(ctx->dev->cm,
-			       CM_CTRL_CORE_CAMERRX_CONTROL,
-			       0x0,
-			       CM_CAMERRX_CTRL_CSI1_CTRLCLKEN_MASK,
-			       CM_CAMERRX_CTRL_CSI1_CTRLCLKEN_SHIFT);
+		set_field(&val, 0x0, CM_CAMERRX_CTRL_CSI1_CTRLCLKEN_MASK);
+	reg_write(ctx->dev->cm, CM_CTRL_CORE_CAMERRX_CONTROL, val);
 }
 
 /*
@@ -547,8 +451,6 @@ static struct cc_data *cc_create(struct cal_dev *dev, unsigned int core)
 	struct platform_device *pdev = dev->pdev;
 	struct cc_data *cc;
 
-	cal_dbg(3, dev, "cc_create\n");
-
 	cc = devm_kzalloc(&pdev->dev, sizeof(*cc), GFP_KERNEL);
 	if (!cc)
 		return ERR_PTR(-ENOMEM);
@@ -558,31 +460,16 @@ static struct cc_data *cc_create(struct cal_dev *dev, unsigned int core)
 					       (core == 0) ?
 						"cal_rx_core0" :
 						"cal_rx_core1");
-	if (!cc->res) {
-		cal_err(dev, "missing platform resources data\n");
-		return ERR_PTR(-ENODEV);
+	cc->base = devm_ioremap_resource(&pdev->dev, cc->res);
+	if (IS_ERR(cc->base)) {
+		cal_err(dev, "failed to ioremap\n");
+		return ERR_CAST(cc->base);
 	}
 
-	cal_dbg(1, dev, "ioresource %s at  %pa - %pa\n",
+	cal_dbg(1, dev, "ioresource %s at %pa - %pa\n",
 		cc->res->name, &cc->res->start, &cc->res->end);
 
-	cc->base = devm_ioremap_resource(&pdev->dev, cc->res);
-	if (!cc->base) {
-		cal_err(dev, "failed to ioremap\n");
-		return ERR_PTR(-ENOMEM);
-	}
-
 	return cc;
-}
-
-static inline u32 cc_read(struct cc_data *dev, int offset)
-{
-	return ioread32(dev->base + offset);
-}
-
-static inline void cc_write(struct cc_data *dev, int offset, u32 value)
-{
-	iowrite32(value, dev->base + offset);
 }
 
 /*
@@ -593,66 +480,98 @@ static void cal_get_hwinfo(struct cal_dev *dev)
 	u32 revision = 0;
 	u32 hwinfo = 0;
 
-	revision = cal_read(dev, CAL_HL_REVISION);
+	revision = reg_read(dev, CAL_HL_REVISION);
 	cal_dbg(3, dev, "CAL_HL_REVISION = 0x%08x (expecting 0x40000200)\n",
 		revision);
 
-	hwinfo = cal_read(dev, CAL_HL_HWINFO);
+	hwinfo = reg_read(dev, CAL_HL_HWINFO);
 	cal_dbg(3, dev, "CAL_HL_HWINFO = 0x%08x (expecting 0xA3C90469)\n",
 		hwinfo);
 }
 
 /*
- * Soft-Reset the Main Cal module. Not sure if this is needed.
+ *   Errata i913: CSI2 LDO Needs to be disabled when module is powered on
+ *
+ *   Enabling CSI2 LDO shorts it to core supply. It is crucial the 2 CSI2
+ *   LDOs on the device are disabled if CSI-2 module is powered on
+ *   (0x4845 B304 | 0x4845 B384 [28:27] = 0x1) or in ULPS (0x4845 B304
+ *   | 0x4845 B384 [28:27] = 0x2) mode. Common concerns include: high
+ *   current draw on the module supply in active mode.
+ *
+ *   Errata does not apply when CSI-2 module is powered off
+ *   (0x4845 B304 | 0x4845 B384 [28:27] = 0x0).
+ *
+ * SW Workaround:
+ *	Set the following register bits to disable the LDO,
+ *	which is essentially CSI2 REG10 bit 6:
+ *
+ *		Core 0:  0x4845 B828 = 0x0000 0040
+ *		Core 1:  0x4845 B928 = 0x0000 0040
  */
-/*
-static void cal_top_reset(struct cal_dev *dev)
+static void i913_errata(struct cal_dev *dev, unsigned int port)
 {
-	cal_write_field(dev,
-			CAL_HL_SYSCONFIG,
-			CAL_HL_SYSCONFIG_SOFTRESET_RESET,
-			CAL_HL_SYSCONFIG_SOFTRESET_MASK,
-			CAL_HL_SYSCONFIG_SOFTRESET_SHIFT);
+	u32 reg10 = reg_read(dev->cc[port], CAL_CSI2_PHY_REG10);
 
-	while(cal_read_field(dev,
-			     CAL_HL_SYSCONFIG,
-			     CAL_HL_SYSCONFIG_SOFTRESET_MASK,
-			     CAL_HL_SYSCONFIG_SOFTRESET_SHIFT) !=
-	      CAL_HL_SYSCONFIG_SOFTRESET_DONE);
+	set_field(&reg10, CAL_CSI2_PHY_REG0_HSCLOCKCONFIG_DISABLE,
+		    CAL_CSI2_PHY_REG10_I933_LDO_DISABLE_MASK);
+
+	cal_dbg(1, dev, "CSI2_%d_REG10 = 0x%08x\n", port, reg10);
+	reg_write(dev->cc[port], CAL_CSI2_PHY_REG10, reg10);
 }
-*/
+
+static inline int cal_runtime_get(struct cal_dev *dev)
+{
+	int r;
+
+	r = pm_runtime_get_sync(&dev->pdev->dev);
+
+	if (dev->flags & DRA72_CAL_PRE_ES2_LDO_DISABLE) {
+		/*
+		 * Apply errata on both paort eveytime we (re-)enable
+		 * the clock
+		 */
+		i913_errata(dev, 0);
+		i913_errata(dev, 1);
+	}
+
+	return r;
+}
+
+static inline void cal_runtime_put(struct cal_dev *dev)
+{
+	pm_runtime_put_sync(&dev->pdev->dev);
+}
 
 static void cal_quickdump_regs(struct cal_dev *dev)
 {
-	cal_info(dev, "CAL Registers @ %pa:\n", &dev->res->start);
+	cal_info(dev, "CAL Registers @ 0x%pa:\n", &dev->res->start);
 	print_hex_dump(KERN_INFO, "", DUMP_PREFIX_OFFSET, 16, 4,
-		       dev->base, (dev->res->end - dev->res->start + 1), false);
+		       (__force const void *)dev->base,
+		       resource_size(dev->res), false);
 
-	if (!dev->ctx[0]) {
+	if (dev->ctx[0]) {
 		cal_info(dev, "CSI2 Core 0 Registers @ %pa:\n",
 			 &dev->ctx[0]->cc->res->start);
 		print_hex_dump(KERN_INFO, "", DUMP_PREFIX_OFFSET, 16, 4,
-			       dev->ctx[0]->cc->base,
-			       (dev->ctx[0]->cc->res->end -
-				dev->ctx[0]->cc->res->start + 1),
+			       (__force const void *)dev->ctx[0]->cc->base,
+			       resource_size(dev->ctx[0]->cc->res),
 			       false);
 	}
 
-	if (!dev->ctx[1]) {
+	if (dev->ctx[1]) {
 		cal_info(dev, "CSI2 Core 1 Registers @ %pa:\n",
 			 &dev->ctx[1]->cc->res->start);
 		print_hex_dump(KERN_INFO, "", DUMP_PREFIX_OFFSET, 16, 4,
-			       dev->ctx[1]->cc->base,
-			       (dev->ctx[1]->cc->res->end -
-				dev->ctx[1]->cc->res->start + 1),
+			       (__force const void *)dev->ctx[1]->cc->base,
+			       resource_size(dev->ctx[1]->cc->res),
 			       false);
 	}
 
 	cal_info(dev, "CAMERRX_Control Registers @ %pa:\n",
 		 &dev->cm->res->start);
 	print_hex_dump(KERN_INFO, "", DUMP_PREFIX_OFFSET, 16, 4,
-		       dev->cm->base,
-		       (dev->cm->res->end - dev->cm->res->start + 1), false);
+		       (__force const void *)dev->cm->base,
+		       resource_size(dev->cm->res), false);
 }
 
 /*
@@ -661,272 +580,209 @@ static void cal_quickdump_regs(struct cal_dev *dev)
 static void enable_irqs(struct cal_ctx *ctx)
 {
 	/* Enable IRQ_WDMA_END 0/1 */
-	cal_write_field(ctx->dev,
+	reg_write_field(ctx->dev,
 			CAL_HL_IRQENABLE_SET(2),
 			CAL_HL_IRQ_ENABLE,
-			CAL_HL_IRQ_MASK(ctx->csi2_port),
-			CAL_HL_IRQ_SHIFT(ctx->csi2_port));
+			CAL_HL_IRQ_MASK(ctx->csi2_port));
 	/* Enable IRQ_WDMA_START 0/1 */
-	cal_write_field(ctx->dev,
+	reg_write_field(ctx->dev,
 			CAL_HL_IRQENABLE_SET(3),
 			CAL_HL_IRQ_ENABLE,
-			CAL_HL_IRQ_MASK(ctx->csi2_port),
-			CAL_HL_IRQ_SHIFT(ctx->csi2_port));
+			CAL_HL_IRQ_MASK(ctx->csi2_port));
 	/* Todo: Add VC_IRQ and CSI2_COMPLEXIO_IRQ handling */
-	cal_write(ctx->dev, CAL_CSI2_VC_IRQENABLE(1), 0xFF000000);
+	reg_write(ctx->dev, CAL_CSI2_VC_IRQENABLE(1), 0xFF000000);
 }
 
 static void disable_irqs(struct cal_ctx *ctx)
 {
 	/* Disable IRQ_WDMA_END 0/1 */
-	cal_write_field(ctx->dev,
+	reg_write_field(ctx->dev,
 			CAL_HL_IRQENABLE_CLR(2),
 			CAL_HL_IRQ_CLEAR,
-			CAL_HL_IRQ_MASK(ctx->csi2_port),
-			CAL_HL_IRQ_SHIFT(ctx->csi2_port));
+			CAL_HL_IRQ_MASK(ctx->csi2_port));
 	/* Disable IRQ_WDMA_START 0/1 */
-	cal_write_field(ctx->dev,
+	reg_write_field(ctx->dev,
 			CAL_HL_IRQENABLE_CLR(3),
-			CAL_HL_IRQ_ENABLE,
-			CAL_HL_IRQ_MASK(ctx->csi2_port),
-			CAL_HL_IRQ_SHIFT(ctx->csi2_port));
+			CAL_HL_IRQ_CLEAR,
+			CAL_HL_IRQ_MASK(ctx->csi2_port));
 	/* Todo: Add VC_IRQ and CSI2_COMPLEXIO_IRQ handling */
-	cal_write(ctx->dev, CAL_CSI2_VC_IRQENABLE(1), 0);
+	reg_write(ctx->dev, CAL_CSI2_VC_IRQENABLE(1), 0);
 }
 
 static void csi2_init(struct cal_ctx *ctx)
 {
+	int i;
 	u32 val;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-	val = cal_read(ctx->dev, CAL_CSI2_TIMING(ctx->csi2_port));
-	write_field(&val, CAL_GEN_ENABLE,
-		    CAL_CSI2_TIMING_FORCE_RX_MODE_IO1_MASK,
-		    CAL_CSI2_TIMING_FORCE_RX_MODE_IO1_SHIFT);
-	write_field(&val, CAL_GEN_ENABLE,
-		    CAL_CSI2_TIMING_STOP_STATE_X16_IO1_MASK,
-		    CAL_CSI2_TIMING_STOP_STATE_X16_IO1_SHIFT);
-	write_field(&val, CAL_GEN_DISABLE,
-		    CAL_CSI2_TIMING_STOP_STATE_X4_IO1_MASK,
-		    CAL_CSI2_TIMING_STOP_STATE_X4_IO1_SHIFT);
-	write_field(&val, 407, CAL_CSI2_TIMING_STOP_STATE_COUNTER_IO1_MASK,
-		    CAL_CSI2_TIMING_STOP_STATE_COUNTER_IO1_SHIFT);
-	cal_write(ctx->dev, CAL_CSI2_TIMING(ctx->csi2_port), val);
+	val = reg_read(ctx->dev, CAL_CSI2_TIMING(ctx->csi2_port));
+	set_field(&val, CAL_GEN_ENABLE,
+		  CAL_CSI2_TIMING_FORCE_RX_MODE_IO1_MASK);
+	set_field(&val, CAL_GEN_ENABLE,
+		  CAL_CSI2_TIMING_STOP_STATE_X16_IO1_MASK);
+	set_field(&val, CAL_GEN_DISABLE,
+		  CAL_CSI2_TIMING_STOP_STATE_X4_IO1_MASK);
+	set_field(&val, 407, CAL_CSI2_TIMING_STOP_STATE_COUNTER_IO1_MASK);
+	reg_write(ctx->dev, CAL_CSI2_TIMING(ctx->csi2_port), val);
 	ctx_dbg(3, ctx, "CAL_CSI2_TIMING(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev, CAL_CSI2_TIMING(ctx->csi2_port)));
+		reg_read(ctx->dev, CAL_CSI2_TIMING(ctx->csi2_port)));
 
-	val = cal_read(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port));
-	write_field(&val, CAL_CSI2_COMPLEXIO_CFG_RESET_CTRL_OPERATIONAL,
-		    CAL_CSI2_COMPLEXIO_CFG_RESET_CTRL_MASK,
-		    CAL_CSI2_COMPLEXIO_CFG_RESET_CTRL_SHIFT);
-	write_field(&val, CAL_CSI2_COMPLEXIO_CFG_PWR_CMD_STATE_ON,
-		    CAL_CSI2_COMPLEXIO_CFG_PWR_CMD_MASK,
-		    CAL_CSI2_COMPLEXIO_CFG_PWR_CMD_SHIFT);
-	cal_write(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port), val);
-	while (cal_read_field(ctx->dev,
-			      CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port),
-			      CAL_CSI2_COMPLEXIO_CFG_PWR_STATUS_MASK,
-			      CAL_CSI2_COMPLEXIO_CFG_PWR_STATUS_SHIFT) !=
-	       CAL_CSI2_COMPLEXIO_CFG_PWR_STATUS_STATE_ON)
-		;
+	val = reg_read(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port));
+	set_field(&val, CAL_CSI2_COMPLEXIO_CFG_RESET_CTRL_OPERATIONAL,
+		  CAL_CSI2_COMPLEXIO_CFG_RESET_CTRL_MASK);
+	set_field(&val, CAL_CSI2_COMPLEXIO_CFG_PWR_CMD_STATE_ON,
+		  CAL_CSI2_COMPLEXIO_CFG_PWR_CMD_MASK);
+	reg_write(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port), val);
+	for (i = 0; i < 10; i++) {
+		if (reg_read_field(ctx->dev,
+				   CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port),
+				   CAL_CSI2_COMPLEXIO_CFG_PWR_STATUS_MASK) ==
+		    CAL_CSI2_COMPLEXIO_CFG_PWR_STATUS_STATE_ON)
+			break;
+		usleep_range(1000, 1100);
+	}
 	ctx_dbg(3, ctx, "CAL_CSI2_COMPLEXIO_CFG(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port)));
+		reg_read(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port)));
 
-	val = cal_read(ctx->dev, CAL_CTRL);
-	write_field(&val, CAL_CTRL_BURSTSIZE_BURST128,
-		    CAL_CTRL_BURSTSIZE_MASK, CAL_CTRL_BURSTSIZE_SHIFT);
-	write_field(&val, 0xF,
-		    CAL_CTRL_TAGCNT_MASK, CAL_CTRL_TAGCNT_SHIFT);
-	write_field(&val, CAL_CTRL_POSTED_WRITES_NONPOSTED,
-		    CAL_CTRL_POSTED_WRITES_MASK, CAL_CTRL_POSTED_WRITES_SHIFT);
-	write_field(&val, 0xFF,
-		    CAL_CTRL_MFLAGL_MASK, CAL_CTRL_MFLAGL_SHIFT);
-	write_field(&val, 0xFF,
-		    CAL_CTRL_MFLAGH_MASK, CAL_CTRL_MFLAGH_SHIFT);
-	cal_write(ctx->dev, CAL_CTRL, val);
-	ctx_dbg(3, ctx, "CAL_CTRL = 0x%08x\n", cal_read(ctx->dev, CAL_CTRL));
+	val = reg_read(ctx->dev, CAL_CTRL);
+	set_field(&val, CAL_CTRL_BURSTSIZE_BURST128, CAL_CTRL_BURSTSIZE_MASK);
+	set_field(&val, 0xF, CAL_CTRL_TAGCNT_MASK);
+	set_field(&val, CAL_CTRL_POSTED_WRITES_NONPOSTED,
+		  CAL_CTRL_POSTED_WRITES_MASK);
+	set_field(&val, 0xFF, CAL_CTRL_MFLAGL_MASK);
+	set_field(&val, 0xFF, CAL_CTRL_MFLAGH_MASK);
+	reg_write(ctx->dev, CAL_CTRL, val);
+	ctx_dbg(3, ctx, "CAL_CTRL = 0x%08x\n", reg_read(ctx->dev, CAL_CTRL));
 }
 
 static void csi2_lane_config(struct cal_ctx *ctx)
 {
-	u32 val = cal_read(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port));
-	u32 lane_shift = CAL_CSI2_COMPLEXIO_CFG_CLOCK_POSITION_SHIFT;
+	u32 val = reg_read(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port));
 	u32 lane_mask = CAL_CSI2_COMPLEXIO_CFG_CLOCK_POSITION_MASK;
 	u32 polarity_mask = CAL_CSI2_COMPLEXIO_CFG_CLOCK_POL_MASK;
 	struct v4l2_of_bus_mipi_csi2 *mipi_csi2 = &ctx->endpoint.bus.mipi_csi2;
 	int lane;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-	write_field(&val, mipi_csi2->clock_lane + 1,
-		    lane_mask, lane_shift);
-	write_field(&val, mipi_csi2->lane_polarities[0],
-		    polarity_mask, lane_shift + 3);
+	set_field(&val, mipi_csi2->clock_lane + 1, lane_mask);
+	set_field(&val, mipi_csi2->lane_polarities[0], polarity_mask);
 	for (lane = 0; lane < mipi_csi2->num_data_lanes; lane++) {
 		/*
 		 * Every lane are one nibble apart starting with the
-		 * clock followed by the data lanes so shift incements by 4.
+		 * clock followed by the data lanes so shift masks by 4.
 		 */
-		lane_shift += 4;
-		write_field(&val, mipi_csi2->data_lanes[lane] + 1,
-			    lane_mask, lane_shift);
-		write_field(&val, mipi_csi2->lane_polarities[lane + 1],
-			    polarity_mask, lane_shift + 3);
+		lane_mask <<= 4;
+		polarity_mask <<= 4;
+		set_field(&val, mipi_csi2->data_lanes[lane] + 1, lane_mask);
+		set_field(&val, mipi_csi2->lane_polarities[lane + 1],
+			  polarity_mask);
 	}
-	cal_write(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port), val);
+
+	reg_write(ctx->dev, CAL_CSI2_COMPLEXIO_CFG(ctx->csi2_port), val);
 	ctx_dbg(3, ctx, "CAL_CSI2_COMPLEXIO_CFG(%d) = 0x%08x\n",
 		ctx->csi2_port, val);
 }
 
 static void csi2_ppi_enable(struct cal_ctx *ctx)
 {
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-	cal_write_field(ctx->dev,
-			CAL_CSI2_PPI_CTRL(ctx->csi2_port),
-			CAL_GEN_ENABLE,
-			CAL_CSI2_PPI_CTRL_IF_EN_MASK,
-			CAL_CSI2_PPI_CTRL_IF_EN_SHIFT);
+	reg_write_field(ctx->dev, CAL_CSI2_PPI_CTRL(ctx->csi2_port),
+			CAL_GEN_ENABLE, CAL_CSI2_PPI_CTRL_IF_EN_MASK);
 }
 
 static void csi2_ppi_disable(struct cal_ctx *ctx)
 {
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-	cal_write_field(ctx->dev,
-			CAL_CSI2_PPI_CTRL(ctx->csi2_port),
-			CAL_GEN_DISABLE,
-			CAL_CSI2_PPI_CTRL_IF_EN_MASK,
-			CAL_CSI2_PPI_CTRL_IF_EN_SHIFT);
+	reg_write_field(ctx->dev, CAL_CSI2_PPI_CTRL(ctx->csi2_port),
+			CAL_GEN_DISABLE, CAL_CSI2_PPI_CTRL_IF_EN_MASK);
 }
 
 static void csi2_ctx_config(struct cal_ctx *ctx)
 {
 	u32 val;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-	val = cal_read(ctx->dev, CAL_CSI2_CTX0(ctx->csi2_port));
-	write_field(&val, ctx->csi2_port, CAL_CSI2_CTX_CPORT_MASK,
-		    CAL_CSI2_CTX_CPORT_SHIFT);
-	/* DT type: MIPI CSI-2 Specs
-	      1: All DT filter is disabled
-	   0x24: RGB888 1 pixel  = 3 bytes
-	   0x2B: RAW10  4 pixels = 5 bytes
-	   0x2A: RAW8   1 pixel  = 1 byte
-	   0x1E: YUV422 2 pixels = 4 bytes
+	val = reg_read(ctx->dev, CAL_CSI2_CTX0(ctx->csi2_port));
+	set_field(&val, ctx->csi2_port, CAL_CSI2_CTX_CPORT_MASK);
+	/*
+	 * DT type: MIPI CSI-2 Specs
+	 *   0x1: All - DT filter is disabled
+	 *  0x24: RGB888 1 pixel  = 3 bytes
+	 *  0x2B: RAW10  4 pixels = 5 bytes
+	 *  0x2A: RAW8   1 pixel  = 1 byte
+	 *  0x1E: YUV422 2 pixels = 4 bytes
 	 */
-	write_field(&val, 0x1, CAL_CSI2_CTX_DT_MASK,
-		    CAL_CSI2_CTX_DT_SHIFT);
+	set_field(&val, 0x1, CAL_CSI2_CTX_DT_MASK);
 	/* Virtual Channel from the CSI2 sensor usually 0! */
-	write_field(&val, ctx->virtual_channel, CAL_CSI2_CTX_VC_MASK,
-		    CAL_CSI2_CTX_VC_SHIFT);
-	/* NUM_LINES_PER_FRAME => 0 means we don't know */
-	write_field(&val, 0, CAL_CSI2_CTX_LINES_MASK,
-		    CAL_CSI2_CTX_LINES_SHIFT);
-	write_field(&val, CAL_CSI2_CTX_ATT_PIX, CAL_CSI2_CTX_ATT_MASK,
-		    CAL_CSI2_CTX_ATT_SHIFT);
-	cal_write_field(ctx->dev,
-			CAL_CSI2_CTX0(ctx->csi2_port),
-			CAL_CSI2_CTX_PACK_MODE_LINE,
-			CAL_CSI2_CTX_PACK_MODE_MASK,
-			CAL_CSI2_CTX_PACK_MODE_SHIFT);
-	write_field(&val, CAL_CSI2_CTX_PACK_MODE_LINE,
-		    CAL_CSI2_CTX_PACK_MODE_MASK, CAL_CSI2_CTX_PACK_MODE_SHIFT);
-	cal_write(ctx->dev, CAL_CSI2_CTX0(ctx->csi2_port), val);
+	set_field(&val, ctx->virtual_channel, CAL_CSI2_CTX_VC_MASK);
+	/* NUM_LINES_PER_FRAME => 0 means auto detect */
+	set_field(&val, 0, CAL_CSI2_CTX_LINES_MASK);
+	set_field(&val, CAL_CSI2_CTX_ATT_PIX, CAL_CSI2_CTX_ATT_MASK);
+	set_field(&val, CAL_CSI2_CTX_PACK_MODE_LINE,
+		  CAL_CSI2_CTX_PACK_MODE_MASK);
+	reg_write(ctx->dev, CAL_CSI2_CTX0(ctx->csi2_port), val);
 	ctx_dbg(3, ctx, "CAL_CSI2_CTX0(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev, CAL_CSI2_CTX0(ctx->csi2_port)));
+		reg_read(ctx->dev, CAL_CSI2_CTX0(ctx->csi2_port)));
 }
 
 static void pix_proc_config(struct cal_ctx *ctx)
 {
 	u32 val;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-	val = cal_read(ctx->dev, CAL_PIX_PROC(ctx->csi2_port));
-	write_field(&val, CAL_PIX_PROC_EXTRACT_B8, CAL_PIX_PROC_EXTRACT_MASK,
-		    CAL_PIX_PROC_EXTRACT_SHIFT);
-	write_field(&val, CAL_PIX_PROC_DPCMD_BYPASS, CAL_PIX_PROC_DPCMD_MASK,
-		    CAL_PIX_PROC_DPCMD_SHIFT);
-	write_field(&val, CAL_PIX_PROC_DPCME_BYPASS, CAL_PIX_PROC_DPCME_MASK,
-		    CAL_PIX_PROC_DPCME_SHIFT);
-	write_field(&val, CAL_PIX_PROC_PACK_B8, CAL_PIX_PROC_PACK_MASK,
-		    CAL_PIX_PROC_PACK_SHIFT);
-	write_field(&val, ctx->csi2_port, CAL_PIX_PROC_CPORT_MASK,
-		    CAL_PIX_PROC_CPORT_SHIFT);
-	cal_write_field(ctx->dev,
-			CAL_PIX_PROC(ctx->csi2_port),
-			CAL_GEN_ENABLE,
-			CAL_PIX_PROC_EN_MASK,
-			CAL_PIX_PROC_EN_SHIFT);
-	write_field(&val, CAL_GEN_ENABLE, CAL_PIX_PROC_EN_MASK,
-		    CAL_PIX_PROC_EN_SHIFT);
-	cal_write(ctx->dev, CAL_PIX_PROC(ctx->csi2_port), val);
+	val = reg_read(ctx->dev, CAL_PIX_PROC(ctx->csi2_port));
+	set_field(&val, CAL_PIX_PROC_EXTRACT_B8, CAL_PIX_PROC_EXTRACT_MASK);
+	set_field(&val, CAL_PIX_PROC_DPCMD_BYPASS, CAL_PIX_PROC_DPCMD_MASK);
+	set_field(&val, CAL_PIX_PROC_DPCME_BYPASS, CAL_PIX_PROC_DPCME_MASK);
+	set_field(&val, CAL_PIX_PROC_PACK_B8, CAL_PIX_PROC_PACK_MASK);
+	set_field(&val, ctx->csi2_port, CAL_PIX_PROC_CPORT_MASK);
+	set_field(&val, CAL_GEN_ENABLE, CAL_PIX_PROC_EN_MASK);
+	reg_write(ctx->dev, CAL_PIX_PROC(ctx->csi2_port), val);
 	ctx_dbg(3, ctx, "CAL_PIX_PROC(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev, CAL_PIX_PROC(ctx->csi2_port)));
+		reg_read(ctx->dev, CAL_PIX_PROC(ctx->csi2_port)));
 }
 
-#define bytes_per_line(pixel, bpp) (ALIGN(pixel * bpp, 16))
-
 static void cal_wr_dma_config(struct cal_ctx *ctx,
-			      unsigned int width)
+			      unsigned int width, unsigned int height)
 {
 	u32 val;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-	val = cal_read(ctx->dev, CAL_WR_DMA_CTRL(ctx->csi2_port));
-	write_field(&val, ctx->csi2_port, CAL_WR_DMA_CTRL_CPORT_MASK,
-		    CAL_WR_DMA_CTRL_CPORT_SHIFT);
-	write_field(&val, CAL_WR_DMA_CTRL_DTAG_PIX_DAT,
-		    CAL_WR_DMA_CTRL_DTAG_MASK, CAL_WR_DMA_CTRL_DTAG_SHIFT);
-	write_field(&val, CAL_WR_DMA_CTRL_MODE_CONST,
-		    CAL_WR_DMA_CTRL_MODE_MASK, CAL_WR_DMA_CTRL_MODE_SHIFT);
-	write_field(&val, CAL_WR_DMA_CTRL_PATTERN_LINEAR,
-		    CAL_WR_DMA_CTRL_PATTERN_MASK,
-		    CAL_WR_DMA_CTRL_PATTERN_SHIFT);
-	write_field(&val, CAL_GEN_ENABLE,
-		    CAL_WR_DMA_CTRL_STALL_RD_MASK,
-		    CAL_WR_DMA_CTRL_STALL_RD_SHIFT);
-	cal_write(ctx->dev, CAL_WR_DMA_CTRL(ctx->csi2_port), val);
+	val = reg_read(ctx->dev, CAL_WR_DMA_CTRL(ctx->csi2_port));
+	set_field(&val, ctx->csi2_port, CAL_WR_DMA_CTRL_CPORT_MASK);
+	set_field(&val, height, CAL_WR_DMA_CTRL_YSIZE_MASK);
+	set_field(&val, CAL_WR_DMA_CTRL_DTAG_PIX_DAT,
+		  CAL_WR_DMA_CTRL_DTAG_MASK);
+	set_field(&val, CAL_WR_DMA_CTRL_MODE_CONST,
+		  CAL_WR_DMA_CTRL_MODE_MASK);
+	set_field(&val, CAL_WR_DMA_CTRL_PATTERN_LINEAR,
+		  CAL_WR_DMA_CTRL_PATTERN_MASK);
+	set_field(&val, CAL_GEN_ENABLE, CAL_WR_DMA_CTRL_STALL_RD_MASK);
+	reg_write(ctx->dev, CAL_WR_DMA_CTRL(ctx->csi2_port), val);
 	ctx_dbg(3, ctx, "CAL_WR_DMA_CTRL(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev, CAL_WR_DMA_CTRL(ctx->csi2_port)));
+		reg_read(ctx->dev, CAL_WR_DMA_CTRL(ctx->csi2_port)));
 
 	/*
 	 * width/16 not sure but giving it a whirl.
 	 * zero does not work right
 	 */
-	cal_write_field(ctx->dev,
+	reg_write_field(ctx->dev,
 			CAL_WR_DMA_OFST(ctx->csi2_port),
 			(width / 16),
-			CAL_WR_DMA_OFST_MASK,
-			CAL_WR_DMA_OFST_SHIFT);
+			CAL_WR_DMA_OFST_MASK);
 	ctx_dbg(3, ctx, "CAL_WR_DMA_OFST(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev, CAL_WR_DMA_OFST(ctx->csi2_port)));
+		reg_read(ctx->dev, CAL_WR_DMA_OFST(ctx->csi2_port)));
 
-	val = cal_read(ctx->dev, CAL_WR_DMA_XSIZE(ctx->csi2_port));
+	val = reg_read(ctx->dev, CAL_WR_DMA_XSIZE(ctx->csi2_port));
 	/* 64 bit word means no skipping */
-	write_field(&val, 0, CAL_WR_DMA_XSIZE_XSKIP_MASK,
-		    CAL_WR_DMA_XSIZE_XSKIP_SHIFT);
+	set_field(&val, 0, CAL_WR_DMA_XSIZE_XSKIP_MASK);
 	/*
 	 * (width*8)/64 this should be size of an entire line
 	 * in 64bit word but 0 means all data until the end
 	 * is detected automagically
 	 */
-	write_field(&val, (width / 8), CAL_WR_DMA_XSIZE_MASK,
-		    CAL_WR_DMA_XSIZE_SHIFT);
-	cal_write(ctx->dev, CAL_WR_DMA_XSIZE(ctx->csi2_port), val);
+	set_field(&val, (width / 8), CAL_WR_DMA_XSIZE_MASK);
+	reg_write(ctx->dev, CAL_WR_DMA_XSIZE(ctx->csi2_port), val);
 	ctx_dbg(3, ctx, "CAL_WR_DMA_XSIZE(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev, CAL_WR_DMA_XSIZE(ctx->csi2_port)));
+		reg_read(ctx->dev, CAL_WR_DMA_XSIZE(ctx->csi2_port)));
 }
 
 static void cal_wr_dma_addr(struct cal_ctx *ctx, unsigned int dmaaddr)
 {
-	cal_write(ctx->dev, CAL_WR_DMA_ADDR(ctx->csi2_port), dmaaddr);
-/*	ctx_dbg(3, ctx, "CAL_WR_DMA_ADDR(%d) = 0x%08x\n", ctx->csi2_port,
-		cal_read(ctx->dev,CAL_WR_DMA_ADDR(ctx->csi2_port))); */
+	reg_write(ctx->dev, CAL_WR_DMA_ADDR(ctx->csi2_port), dmaaddr);
 }
 
 /*
@@ -941,26 +797,6 @@ static void csi2_phy_config(struct cal_ctx *ctx)
 {
 	unsigned int reg0, reg1;
 	unsigned int ths_term, ths_settle;
-
-	ctx_dbg(3, ctx, "%s\n", __func__);
-
-#ifdef LEGACY_CSI2PHY_FORMULA
-	{
-	int csi2_ddrclk_khz;
-
-	csi2_ddrclk_khz = ctx->external_rate / 1000
-		/ (2 * ctx->endpoint.bus.mipi_csi2.num_data_lanes)
-		* ctx->fmt->depth;
-
-	/*
-	 * THS_TERM: Programmed value = ceil(12.5 ns/DDRClk period) - 1.
-	 * THS_SETTLE: Programmed value = ceil(90 ns/DDRClk period) + 3.
-	 */
-	ths_term = DIV_ROUND_UP(25 * csi2_ddrclk_khz, 2000000) - 1;
-	ths_settle = DIV_ROUND_UP(90 * csi2_ddrclk_khz, 1000000) + 3;
-	}
-#else
-	{
 	unsigned int ddrclkperiod_us;
 
 	/*
@@ -991,64 +827,41 @@ static void csi2_phy_config(struct cal_ctx *ctx)
 
 	ths_settle = THS_SETTLE;
 	ctx_dbg(1, ctx, "ths_settle: %d (0x%02x)\n", ths_settle, ths_settle);
-	}
-#endif
-	reg0 = cc_read(ctx->cc, CAL_CSI2_PHY_REG0);
-	write_field(&reg0, CAL_CSI2_PHY_REG0_HSCLOCKCONFIG_DISABLE,
-		    CAL_CSI2_PHY_REG0_HSCLOCKCONFIG_MASK,
-		    CAL_CSI2_PHY_REG0_HSCLOCKCONFIG_SHIFT);
-	write_field(&reg0, ths_term,
-		    CAL_CSI2_PHY_REG0_THS_TERM_MASK,
-		    CAL_CSI2_PHY_REG0_THS_TERM_SHIFT);
-	write_field(&reg0, ths_settle,
-		    CAL_CSI2_PHY_REG0_THS_SETTLE_MASK,
-		    CAL_CSI2_PHY_REG0_THS_SETTLE_SHIFT);
+
+	reg0 = reg_read(ctx->cc, CAL_CSI2_PHY_REG0);
+	set_field(&reg0, CAL_CSI2_PHY_REG0_HSCLOCKCONFIG_DISABLE,
+		  CAL_CSI2_PHY_REG0_HSCLOCKCONFIG_MASK);
+	set_field(&reg0, ths_term, CAL_CSI2_PHY_REG0_THS_TERM_MASK);
+	set_field(&reg0, ths_settle, CAL_CSI2_PHY_REG0_THS_SETTLE_MASK);
 
 	ctx_dbg(1, ctx, "CSI2_%d_REG0 = 0x%08x\n", (ctx->csi2_port - 1), reg0);
-	cc_write(ctx->cc, CAL_CSI2_PHY_REG0, reg0);
+	reg_write(ctx->cc, CAL_CSI2_PHY_REG0, reg0);
 
-	reg1 = cc_read(ctx->cc, CAL_CSI2_PHY_REG1);
-	write_field(&reg1, TCLK_TERM,
-		    CAL_CSI2_PHY_REG1_TCLK_TERM_MASK,
-		    CAL_CSI2_PHY_REG1_TCLK_TERM_SHIFT);
-	write_field(&reg1, 0xb8,
-		    CAL_CSI2_PHY_REG1_DPHY_HS_SYNC_PATTERN_MASK,
-		    CAL_CSI2_PHY_REG1_DPHY_HS_SYNC_PATTERN_SHIFT);
-	write_field(&reg1, TCLK_MISS,
-		    CAL_CSI2_PHY_REG1_CTRLCLK_DIV_FACTOR_MASK,
-		    CAL_CSI2_PHY_REG1_CTRLCLK_DIV_FACTOR_SHIFT);
-	write_field(&reg1, TCLK_SETTLE,
-		    CAL_CSI2_PHY_REG1_TCLK_SETTLE_MASK,
-		    CAL_CSI2_PHY_REG1_TCLK_SETTLE_SHIFT);
+	reg1 = reg_read(ctx->cc, CAL_CSI2_PHY_REG1);
+	set_field(&reg1, TCLK_TERM, CAL_CSI2_PHY_REG1_TCLK_TERM_MASK);
+	set_field(&reg1, 0xb8, CAL_CSI2_PHY_REG1_DPHY_HS_SYNC_PATTERN_MASK);
+	set_field(&reg1, TCLK_MISS, CAL_CSI2_PHY_REG1_CTRLCLK_DIV_FACTOR_MASK);
+	set_field(&reg1, TCLK_SETTLE, CAL_CSI2_PHY_REG1_TCLK_SETTLE_MASK);
 
 	ctx_dbg(1, ctx, "CSI2_%d_REG1 = 0x%08x\n", (ctx->csi2_port - 1), reg1);
-	cc_write(ctx->cc, CAL_CSI2_PHY_REG1, reg1);
+	reg_write(ctx->cc, CAL_CSI2_PHY_REG1, reg1);
 }
 
 static int cal_get_external_info(struct cal_ctx *ctx)
 {
-	struct v4l2_ext_control ctrl_ext;
-	struct v4l2_ext_controls ctrls_ext;
-	int ret;
+	struct v4l2_ctrl *ctrl;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
+	if (!ctx->sensor)
+		return -ENODEV;
 
-	memset(&ctrls_ext, 0, sizeof(ctrls_ext));
-	memset(&ctrl_ext, 0, sizeof(ctrl_ext));
-
-	ctrl_ext.id = V4L2_CID_PIXEL_RATE;
-
-	ctrls_ext.count = 1;
-	ctrls_ext.controls = &ctrl_ext;
-
-	ret = v4l2_g_ext_ctrls(&ctx->ctrl_handler, &ctrls_ext);
-	if (ret < 0) {
+	ctrl = v4l2_ctrl_find(ctx->sensor->ctrl_handler, V4L2_CID_PIXEL_RATE);
+	if (!ctrl) {
 		ctx_err(ctx, "no pixel rate control in subdev: %s\n",
 			ctx->sensor->name);
 		return -EPIPE;
 	}
 
-	ctx->external_rate = ctrl_ext.value64;
+	ctx->external_rate = v4l2_ctrl_g_ctrl_int64(ctrl);
 	ctx_dbg(3, ctx, "sensor Pixel Rate: %d\n", ctx->external_rate);
 
 	return 0;
@@ -1064,26 +877,24 @@ static inline void cal_schedule_next_buffer(struct cal_ctx *ctx)
 	ctx->next_frm = buf;
 	list_del(&buf->list);
 
-	addr = vb2_dma_contig_plane_dma_addr(&buf->vb, 0);
+	addr = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
 	cal_wr_dma_addr(ctx, addr);
 }
 
 static inline void cal_process_buffer_complete(struct cal_ctx *ctx)
 {
-	v4l2_get_timestamp(&ctx->cur_frm->vb.v4l2_buf.timestamp);
-	ctx->cur_frm->vb.v4l2_buf.field = ctx->field;
-	ctx->cur_frm->vb.v4l2_buf.sequence = ctx->sequence++;
+	v4l2_get_timestamp(&ctx->cur_frm->vb.timestamp);
+	ctx->cur_frm->vb.field = ctx->m_fmt.field;
+	ctx->cur_frm->vb.sequence = ctx->sequence++;
 
-	vb2_buffer_done(&ctx->cur_frm->vb, VB2_BUF_STATE_DONE);
+	vb2_buffer_done(&ctx->cur_frm->vb.vb2_buf, VB2_BUF_STATE_DONE);
 	ctx->cur_frm = ctx->next_frm;
 }
 
 #define isvcirqset(irq, vc, ff) (irq & \
-	(CAL_CSI2_VC_IRQENABLE_ ##ff ##_IRQ_##vc ##_MASK << \
-	 CAL_CSI2_VC_IRQENABLE_ ##ff ##_IRQ_##vc ##_SHIFT))
+	(CAL_CSI2_VC_IRQENABLE_ ##ff ##_IRQ_##vc ##_MASK))
 
-#define isportirqset(irq, port) (irq & \
-	(CAL_HL_IRQ_MASK(port) << CAL_HL_IRQ_SHIFT(port)))
+#define isportirqset(irq, port) (irq & CAL_HL_IRQ_MASK(port))
 
 static irqreturn_t cal_irq(int irq_cal, void *data)
 {
@@ -1093,10 +904,10 @@ static irqreturn_t cal_irq(int irq_cal, void *data)
 	u32 irqst2, irqst3;
 
 	/* Check which DMA just finished */
-	irqst2 = cal_read(dev, CAL_HL_IRQSTATUS(2));
+	irqst2 = reg_read(dev, CAL_HL_IRQSTATUS(2));
 	if (irqst2) {
 		/* Clear Interrupt status */
-		cal_write(dev, CAL_HL_IRQSTATUS(2), irqst2);
+		reg_write(dev, CAL_HL_IRQSTATUS(2), irqst2);
 
 		/* Need to check both port */
 		if (isportirqset(irqst2, 1)) {
@@ -1115,10 +926,10 @@ static irqreturn_t cal_irq(int irq_cal, void *data)
 	}
 
 	/* Check which DMA just started */
-	irqst3 = cal_read(dev, CAL_HL_IRQSTATUS(3));
+	irqst3 = reg_read(dev, CAL_HL_IRQSTATUS(3));
 	if (irqst3) {
 		/* Clear Interrupt status */
-		cal_write(dev, CAL_HL_IRQSTATUS(3), irqst3);
+		reg_write(dev, CAL_HL_IRQSTATUS(3), irqst3);
 
 		/* Need to check both port */
 		if (isportirqset(irqst3, 1)) {
@@ -1155,8 +966,9 @@ static int cal_querycap(struct file *file, void *priv,
 {
 	struct cal_ctx *ctx = video_drvdata(file);
 
-	strcpy(cap->driver, CAL_MODULE_NAME);
-	strcpy(cap->card, CAL_MODULE_NAME);
+	strlcpy(cap->driver, CAL_MODULE_NAME, sizeof(cap->driver));
+	strlcpy(cap->card, CAL_MODULE_NAME, sizeof(cap->card));
+
 	snprintf(cap->bus_info, sizeof(cap->bus_info),
 		 "platform:%s", ctx->v4l2_dev.name);
 	cap->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING |
@@ -1168,23 +980,14 @@ static int cal_querycap(struct file *file, void *priv,
 static int cal_enum_fmt_vid_cap(struct file *file, void  *priv,
 				struct v4l2_fmtdesc *f)
 {
+	struct cal_ctx *ctx = video_drvdata(file);
 	const struct cal_fmt *fmt = NULL;
-	u32 k;
 
-	if (f->index >= ARRAY_SIZE(formats))
+	if (f->index >= ctx->num_active_fmt)
 		return -EINVAL;
 
-	for (k = 0; k < ARRAY_SIZE(formats); k++) {
-		if ((formats[k].index == f->index) &&
-		    (formats[k].supported)) {
-			fmt = &formats[k];
-			break;
-		}
-	}
-	if (!fmt)
-		return -EINVAL;
+	fmt = ctx->active_fmt[f->index];
 
-	strlcpy(f->description, fmt->name, sizeof(f->description));
 	f->pixelformat = fmt->fourcc;
 	f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	return 0;
@@ -1196,11 +999,6 @@ static int __subdev_get_format(struct cal_ctx *ctx,
 	struct v4l2_subdev_format sd_fmt;
 	struct v4l2_mbus_framefmt *mbus_fmt = &sd_fmt.format;
 	int ret;
-
-	ctx_dbg(2, ctx, "%s\n", __func__);
-
-	if (!ctx->sensor)
-		return -EINVAL;
 
 	sd_fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	sd_fmt.pad = 0;
@@ -1224,11 +1022,6 @@ static int __subdev_set_format(struct cal_ctx *ctx,
 	struct v4l2_mbus_framefmt *mbus_fmt = &sd_fmt.format;
 	int ret;
 
-	ctx_dbg(2, ctx, "%s\n", __func__);
-
-	if (!ctx->sensor)
-		return -EINVAL;
-
 	sd_fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	sd_fmt.pad = 0;
 	*mbus_fmt = *fmt;
@@ -1243,50 +1036,37 @@ static int __subdev_set_format(struct cal_ctx *ctx,
 	return 0;
 }
 
+static int cal_calc_format_size(struct cal_ctx *ctx,
+				const struct cal_fmt *fmt,
+				struct v4l2_format *f)
+{
+	if (!fmt) {
+		ctx_dbg(3, ctx, "No cal_fmt provided!\n");
+		return -EINVAL;
+	}
+
+	v4l_bound_align_image(&f->fmt.pix.width, 48, MAX_WIDTH, 2,
+			      &f->fmt.pix.height, 32, MAX_HEIGHT, 0, 0);
+	f->fmt.pix.bytesperline = bytes_per_line(f->fmt.pix.width,
+						 fmt->depth >> 3);
+	f->fmt.pix.sizeimage = f->fmt.pix.height *
+			       f->fmt.pix.bytesperline;
+
+	ctx_dbg(3, ctx, "%s: fourcc: %s size: %dx%d bpl:%d img_size:%d\n",
+		__func__, fourcc_to_str(f->fmt.pix.pixelformat),
+		f->fmt.pix.width, f->fmt.pix.height,
+		f->fmt.pix.bytesperline, f->fmt.pix.sizeimage);
+
+	return 0;
+}
+
 static int cal_g_fmt_vid_cap(struct file *file, void *priv,
 			     struct v4l2_format *f)
 {
 	struct cal_ctx *ctx = video_drvdata(file);
-	const struct cal_fmt *fmt;
-	struct v4l2_mbus_framefmt mbus_fmt;
-	int ret;
 
-	ret = __subdev_get_format(ctx, &mbus_fmt);
-	if (ret)
-		return ret;
+	*f = ctx->v_fmt;
 
-	fmt = find_format_by_code(mbus_fmt.code);
-	if (!fmt) {
-		ctx_dbg(3, ctx, "mbus code format (0x%08x) not found.\n",
-			mbus_fmt.code);
-		/* code not found, use a working default */
-		fmt = find_format_by_code(MEDIA_BUS_FMT_YUYV8_2X8);
-		mbus_fmt.code = fmt->code;
-		mbus_fmt.colorspace = fmt->colorspace;
-		mbus_fmt.width = 1920;
-		mbus_fmt.height = 1080;
-		mbus_fmt.field = V4L2_FIELD_NONE;
-	}
-
-	if (ctx->fmt != fmt) {
-		/* looks like current format has changed, update local */
-		ctx->fmt = fmt;
-		ctx->width = mbus_fmt.width;
-		ctx->height = mbus_fmt.height;
-		ctx->field = mbus_fmt.field;
-		ctx->pixelsize = ctx->fmt->depth >> 3;
-	}
-
-	f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	f->fmt.pix.width        = ctx->width;
-	f->fmt.pix.height       = ctx->height;
-	f->fmt.pix.field        = ctx->field;
-	f->fmt.pix.pixelformat  = ctx->fmt->fourcc;
-	f->fmt.pix.colorspace   = ctx->fmt->colorspace;
-	f->fmt.pix.bytesperline =
-		(f->fmt.pix.width * ctx->fmt->depth) >> 3;
-	f->fmt.pix.sizeimage =
-		f->fmt.pix.height * f->fmt.pix.bytesperline;
 	return 0;
 }
 
@@ -1295,37 +1075,58 @@ static int cal_try_fmt_vid_cap(struct file *file, void *priv,
 {
 	struct cal_ctx *ctx = video_drvdata(file);
 	const struct cal_fmt *fmt;
-	struct v4l2_fmtdesc fmt_desc;
+	struct v4l2_subdev_frame_size_enum fse;
+	int ret, found;
 
-	ctx_dbg(2, ctx, "%s\n", __func__);
-
-	fmt = find_format_by_pix(f->fmt.pix.pixelformat);
+	fmt = find_format_by_pix(ctx, f->fmt.pix.pixelformat);
 	if (!fmt) {
 		ctx_dbg(3, ctx, "Fourcc format (0x%08x) not found.\n",
 			f->fmt.pix.pixelformat);
 
 		/* Just get the first one enumerated */
-		fmt_desc.index = 0;
-		if (cal_enum_fmt_vid_cap(file, priv, &fmt_desc)) {
-			ctx_dbg(3, ctx,
-				"no default fmt found , this should not happen.\n");
-			fmt = find_format_by_code(MEDIA_BUS_FMT_YUYV8_2X8);
-		} else {
-			fmt = find_format_by_pix(fmt_desc.pixelformat);
-		}
+		fmt = ctx->active_fmt[0];
 		f->fmt.pix.pixelformat = fmt->fourcc;
 	}
 
-	f->fmt.pix.field = ctx->field;
-	v4l_bound_align_image(&f->fmt.pix.width, 48, MAX_WIDTH, 2,
-			      &f->fmt.pix.height, 32, MAX_HEIGHT, 0, 0);
-	f->fmt.pix.bytesperline =
-		(f->fmt.pix.width * fmt->depth) >> 3;
-	f->fmt.pix.sizeimage =
-		f->fmt.pix.height * f->fmt.pix.bytesperline;
-	f->fmt.pix.colorspace = fmt->colorspace;
-	f->fmt.pix.priv = 0;
-	return 0;
+	f->fmt.pix.field = ctx->v_fmt.fmt.pix.field;
+
+	/* check for/find a valid width/height */
+	ret = 0;
+	found = false;
+	fse.pad = 0;
+	fse.code = fmt->code;
+	fse.which = V4L2_SUBDEV_FORMAT_ACTIVE;
+	for (fse.index = 0; ; fse.index++) {
+		ret = v4l2_subdev_call(ctx->sensor, pad, enum_frame_size,
+				       NULL, &fse);
+		if (ret)
+			break;
+
+		if ((f->fmt.pix.width == fse.max_width) &&
+		    (f->fmt.pix.height == fse.max_height)) {
+			found = true;
+			break;
+		} else if ((f->fmt.pix.width >= fse.min_width) &&
+			 (f->fmt.pix.width <= fse.max_width) &&
+			 (f->fmt.pix.height >= fse.min_height) &&
+			 (f->fmt.pix.height <= fse.max_height)) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!found) {
+		/* use existing values as default */
+		f->fmt.pix.width = ctx->v_fmt.fmt.pix.width;
+		f->fmt.pix.height =  ctx->v_fmt.fmt.pix.height;
+	}
+
+	/*
+	 * Use current colorspace for now, it will get
+	 * updated properly during s_fmt
+	 */
+	f->fmt.pix.colorspace = ctx->v_fmt.fmt.pix.colorspace;
+	return cal_calc_format_size(ctx, fmt, f);
 }
 
 static int cal_s_fmt_vid_cap(struct file *file, void *priv,
@@ -1337,8 +1138,6 @@ static int cal_s_fmt_vid_cap(struct file *file, void *priv,
 	struct v4l2_mbus_framefmt mbus_fmt;
 	int ret;
 
-	ctx_dbg(2, ctx, "%s\n", __func__);
-
 	if (vb2_is_busy(q)) {
 		ctx_dbg(3, ctx, "%s device busy\n", __func__);
 		return -EBUSY;
@@ -1348,7 +1147,7 @@ static int cal_s_fmt_vid_cap(struct file *file, void *priv,
 	if (ret < 0)
 		return ret;
 
-	fmt = find_format_by_pix(f->fmt.pix.pixelformat);
+	fmt = find_format_by_pix(ctx, f->fmt.pix.pixelformat);
 
 	v4l2_fill_mbus_format(&mbus_fmt, &f->fmt.pix, fmt->code);
 
@@ -1364,11 +1163,13 @@ static int cal_s_fmt_vid_cap(struct file *file, void *priv,
 		return -EINVAL;
 	}
 
+	v4l2_fill_pix_format(&ctx->v_fmt.fmt.pix, &mbus_fmt);
+	ctx->v_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	ctx->v_fmt.fmt.pix.pixelformat  = fmt->fourcc;
+	cal_calc_format_size(ctx, fmt, &ctx->v_fmt);
 	ctx->fmt = fmt;
-	ctx->pixelsize = ctx->fmt->depth >> 3;
-	ctx->field = f->fmt.pix.field;
-	ctx->width = f->fmt.pix.width;
-	ctx->height = f->fmt.pix.height;
+	ctx->m_fmt = mbus_fmt;
+	*f = ctx->v_fmt;
 
 	return 0;
 }
@@ -1381,10 +1182,8 @@ static int cal_enum_framesizes(struct file *file, void *fh,
 	struct v4l2_subdev_frame_size_enum fse;
 	int ret;
 
-	ctx_dbg(2, ctx, "%s\n", __func__);
-
 	/* check for valid format */
-	fmt = find_format_by_pix(fsize->pixel_format);
+	fmt = find_format_by_pix(ctx, fsize->pixel_format);
 	if (!fmt) {
 		ctx_dbg(3, ctx, "Invalid pixel code: %x\n",
 			fsize->pixel_format);
@@ -1397,7 +1196,7 @@ static int cal_enum_framesizes(struct file *file, void *fh,
 
 	ret = v4l2_subdev_call(ctx->sensor, pad, enum_frame_size, NULL, &fse);
 	if (ret)
-		return -EINVAL;
+		return ret;
 
 	ctx_dbg(1, ctx, "%s: index: %d code: %x W:[%d,%d] H:[%d,%d]\n",
 		__func__, fse.index, fse.code, fse.min_width, fse.max_width,
@@ -1436,9 +1235,6 @@ static int cal_s_input(struct file *file, void *priv, unsigned int i)
 	if (i >= CAL_NUM_INPUT)
 		return -EINVAL;
 
-	if (i == ctx->input)
-		return 0;
-
 	ctx->input = i;
 	return 0;
 }
@@ -1449,42 +1245,25 @@ static int cal_enum_frameintervals(struct file *file, void *priv,
 {
 	struct cal_ctx *ctx = video_drvdata(file);
 	const struct cal_fmt *fmt;
-	struct v4l2_subdev_frame_size_enum fse;
+	struct v4l2_subdev_frame_interval_enum fie = {
+		.index = fival->index,
+		.width = fival->width,
+		.height = fival->height,
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	int ret;
 
-	if (fival->index)
-		return -EINVAL;
-
-	fmt = find_format_by_pix(fival->pixel_format);
+	fmt = find_format_by_pix(ctx, fival->pixel_format);
 	if (!fmt)
 		return -EINVAL;
 
-	/* check for valid width/height */
-	ret = 0;
-	fse.pad = 0;
-	fse.code = fmt->code;
-	fse.which = V4L2_SUBDEV_FORMAT_ACTIVE;
-	for (fse.index = 0; ; fse.index++) {
-		ret = v4l2_subdev_call(ctx->sensor, pad, enum_frame_size,
-				       NULL, &fse);
-		if (ret)
-			return -EINVAL;
-
-		if ((fival->width == fse.max_width) &&
-		    (fival->height == fse.max_height))
-			break;
-		else if ((fival->width >= fse.min_width) &&
-			 (fival->width <= fse.max_width) &&
-			 (fival->height >= fse.min_height) &&
-			 (fival->height <= fse.max_height))
-			break;
-
-		return -EINVAL;
-	}
-
+	fie.code = fmt->code;
+	ret = v4l2_subdev_call(ctx->sensor, pad, enum_frame_interval,
+			       NULL, &fie);
+	if (ret)
+		return ret;
 	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
-	fival->discrete.numerator = 1;
-	fival->discrete.denominator = 30;
+	fival->discrete = fie.interval;
 
 	return 0;
 }
@@ -1492,28 +1271,24 @@ static int cal_enum_frameintervals(struct file *file, void *priv,
 /*
  * Videobuf operations
  */
-static int cal_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
+static int cal_queue_setup(struct vb2_queue *vq, const void *parg,
 			   unsigned int *nbuffers, unsigned int *nplanes,
 			   unsigned int sizes[], void *alloc_ctxs[])
 {
+	const struct v4l2_format *fmt = parg;
 	struct cal_ctx *ctx = vb2_get_drv_priv(vq);
-	unsigned long size;
 
-	size = ctx->width * ctx->height * ctx->pixelsize;
-	if (fmt) {
-		if (fmt->fmt.pix.sizeimage < size)
-			return -EINVAL;
-		size = fmt->fmt.pix.sizeimage;
-		/* check against insane over 8K resolution buffers */
-		if (size > 7680 * 4320 * ctx->pixelsize)
-			return -EINVAL;
-	}
+	if (fmt && fmt->fmt.pix.sizeimage < ctx->v_fmt.fmt.pix.sizeimage)
+		return -EINVAL;
+
+	if (vq->num_buffers + *nbuffers < 3)
+		*nbuffers = 3 - vq->num_buffers;
 
 	*nplanes = 1;
-	sizes[0] = size;
+	sizes[0] = fmt ? fmt->fmt.pix.sizeimage : ctx->v_fmt.fmt.pix.sizeimage;
 	alloc_ctxs[0] = ctx->alloc_ctx;
 
-	ctx_dbg(3, ctx, "nbuffers=%d, size=%ld\n", *nbuffers, size);
+	ctx_dbg(3, ctx, "nbuffers=%d, size=%d\n", *nbuffers, sizes[0]);
 
 	return 0;
 }
@@ -1521,12 +1296,14 @@ static int cal_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
 static int cal_buffer_prepare(struct vb2_buffer *vb)
 {
 	struct cal_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
-	struct cal_buffer *buf = container_of(vb, struct cal_buffer, vb);
+	struct cal_buffer *buf = container_of(vb, struct cal_buffer,
+					      vb.vb2_buf);
 	unsigned long size;
 
-	BUG_ON(NULL == ctx->fmt);
+	if (WARN_ON(!ctx->fmt))
+		return -EINVAL;
 
-	size = ctx->width * ctx->height * ctx->pixelsize;
+	size = ctx->v_fmt.fmt.pix.sizeimage;
 	if (vb2_plane_size(vb, 0) < size) {
 		ctx_err(ctx,
 			"data will not fit into plane (%lu < %lu)\n",
@@ -1534,14 +1311,15 @@ static int cal_buffer_prepare(struct vb2_buffer *vb)
 		return -EINVAL;
 	}
 
-	vb2_set_plane_payload(&buf->vb, 0, size);
+	vb2_set_plane_payload(&buf->vb.vb2_buf, 0, size);
 	return 0;
 }
 
 static void cal_buffer_queue(struct vb2_buffer *vb)
 {
 	struct cal_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
-	struct cal_buffer *buf = container_of(vb, struct cal_buffer, vb);
+	struct cal_buffer *buf = container_of(vb, struct cal_buffer,
+					      vb.vb2_buf);
 	struct cal_dmaqueue *vidq = &ctx->vidq;
 	unsigned long flags = 0;
 
@@ -1555,12 +1333,10 @@ static int cal_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 	struct cal_ctx *ctx = vb2_get_drv_priv(vq);
 	struct cal_dmaqueue *dma_q = &ctx->vidq;
-	struct cal_buffer *buf;
+	struct cal_buffer *buf, *tmp;
 	unsigned long addr = 0;
 	unsigned long flags;
 	int ret;
-
-	ctx_dbg(3, ctx, "%s\n", __func__);
 
 	spin_lock_irqsave(&ctx->slock, flags);
 	if (list_empty(&dma_q->active)) {
@@ -1575,16 +1351,14 @@ static int cal_start_streaming(struct vb2_queue *vq, unsigned int count)
 	list_del(&buf->list);
 	spin_unlock_irqrestore(&ctx->slock, flags);
 
-	v4l2_get_timestamp(&buf->vb.v4l2_buf.timestamp);
-
-	addr = vb2_dma_contig_plane_dma_addr(&ctx->cur_frm->vb, 0);
+	addr = vb2_dma_contig_plane_dma_addr(&ctx->cur_frm->vb.vb2_buf, 0);
 	ctx->sequence = 0;
-
-	ctx_dbg(3, ctx, "enable_irqs\n");
 
 	ret = cal_get_external_info(ctx);
 	if (ret < 0)
-		return ret;
+		goto err;
+
+	cal_runtime_get(ctx->dev);
 
 	enable_irqs(ctx);
 	camerarx_phy_enable(ctx);
@@ -1593,71 +1367,63 @@ static int cal_start_streaming(struct vb2_queue *vq, unsigned int count)
 	csi2_lane_config(ctx);
 	csi2_ctx_config(ctx);
 	pix_proc_config(ctx);
-	cal_wr_dma_config(ctx, ALIGN((ctx->width * ctx->pixelsize), 16));
+	cal_wr_dma_config(ctx, ctx->v_fmt.fmt.pix.bytesperline,
+				ctx->v_fmt.fmt.pix.height);
 	cal_wr_dma_addr(ctx, addr);
 	csi2_ppi_enable(ctx);
 
-	if (ctx->sensor) {
-		if (v4l2_subdev_call(ctx->sensor, video, s_stream, 1)) {
-			ctx_err(ctx, "stream on failed in subdev\n");
-			return -EINVAL;
-		}
+	ret = v4l2_subdev_call(ctx->sensor, video, s_stream, 1);
+	if (ret) {
+		ctx_err(ctx, "stream on failed in subdev\n");
+		cal_runtime_put(ctx->dev);
+		goto err;
 	}
 
 	if (debug >= 4)
 		cal_quickdump_regs(ctx->dev);
 
-	ctx_dbg(3, ctx, "returning from %s\n", __func__);
 	return 0;
+
+err:
+	list_for_each_entry_safe(buf, tmp, &dma_q->active, list) {
+		list_del(&buf->list);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_QUEUED);
+	}
+	return ret;
 }
 
 static void cal_stop_streaming(struct vb2_queue *vq)
 {
 	struct cal_ctx *ctx = vb2_get_drv_priv(vq);
 	struct cal_dmaqueue *dma_q = &ctx->vidq;
+	struct cal_buffer *buf, *tmp;
 	unsigned long flags;
 
-	ctx_dbg(3, ctx, "%s\n", __func__);
+	if (v4l2_subdev_call(ctx->sensor, video, s_stream, 0))
+		ctx_err(ctx, "stream off failed in subdev\n");
 
-	if (ctx->sensor) {
-		if (v4l2_subdev_call(ctx->sensor, video, s_stream, 0))
-			ctx_err(ctx, "stream off failed in subdev\n");
-	}
-
-	ctx_dbg(3, ctx, "csi2_ppi_disable\n");
 	csi2_ppi_disable(ctx);
-
-	ctx_dbg(3, ctx, "disable_irqs\n");
 	disable_irqs(ctx);
 
 	/* Release all active buffers */
 	spin_lock_irqsave(&ctx->slock, flags);
-	while (!list_empty(&dma_q->active)) {
-		struct cal_buffer *buf;
-
-		buf = list_entry(dma_q->active.next, struct cal_buffer, list);
+	list_for_each_entry_safe(buf, tmp, &dma_q->active, list) {
 		list_del(&buf->list);
-		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
-		ctx_dbg(3, ctx, "[%p/%d] done\n", buf, buf->vb.v4l2_buf.index);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 	}
-	spin_unlock_irqrestore(&ctx->slock, flags);
 
 	if (ctx->cur_frm == ctx->next_frm) {
-		vb2_buffer_done(&ctx->cur_frm->vb, VB2_BUF_STATE_ERROR);
-		ctx_dbg(3, ctx, "[%p/%d] done cur_frm\n", ctx->cur_frm,
-			ctx->cur_frm->vb.v4l2_buf.index);
+		vb2_buffer_done(&ctx->cur_frm->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 	} else {
-		vb2_buffer_done(&ctx->cur_frm->vb, VB2_BUF_STATE_ERROR);
-		ctx_dbg(3, ctx, "[%p/%d] done cur_frm\n", ctx->cur_frm,
-			ctx->cur_frm->vb.v4l2_buf.index);
-		vb2_buffer_done(&ctx->next_frm->vb, VB2_BUF_STATE_ERROR);
-		ctx_dbg(3, ctx, "[%p/%d] done next_frm\n", ctx->next_frm,
-			ctx->next_frm->vb.v4l2_buf.index);
+		vb2_buffer_done(&ctx->cur_frm->vb.vb2_buf, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&ctx->next_frm->vb.vb2_buf,
+				VB2_BUF_STATE_ERROR);
 	}
 	ctx->cur_frm = NULL;
 	ctx->next_frm = NULL;
+	spin_unlock_irqrestore(&ctx->slock, flags);
 
-	ctx_dbg(3, ctx, "returning from %s\n", __func__);
+	cal_runtime_put(ctx->dev);
 }
 
 static struct vb2_ops cal_video_qops = {
@@ -1693,6 +1459,7 @@ static const struct v4l2_ioctl_ops cal_ioctl_ops = {
 	.vidioc_querybuf      = vb2_ioctl_querybuf,
 	.vidioc_qbuf          = vb2_ioctl_qbuf,
 	.vidioc_dqbuf         = vb2_ioctl_dqbuf,
+	.vidioc_expbuf        = vb2_ioctl_expbuf,
 	.vidioc_enum_input    = cal_enum_input,
 	.vidioc_g_input       = cal_g_input,
 	.vidioc_s_input       = cal_s_input,
@@ -1709,34 +1476,13 @@ static struct video_device cal_videodev = {
 	.fops		= &cal_fops,
 	.ioctl_ops	= &cal_ioctl_ops,
 	.minor		= -1,
-	.release	= video_device_release,
+	.release	= video_device_release_empty,
 };
 
 /* -----------------------------------------------------------------
-	Initialization and module stuff
-   ------------------------------------------------------------------*/
-static int cal_release(struct cal_dev *dev)
-{
-	struct cal_ctx *ctx;
-	int i;
-
-	for (i = 0; i < CAL_NUM_CONTEXT; i++) {
-		ctx = dev->ctx[i];
-		if (ctx) {
-			v4l2_info(&ctx->v4l2_dev, "unregistering %s\n",
-				  video_device_node_name(&ctx->vdev));
-			video_unregister_device(&ctx->vdev);
-			v4l2_device_unregister(&ctx->v4l2_dev);
-			vb2_dma_contig_cleanup_ctx(ctx->alloc_ctx);
-			v4l2_ctrl_handler_free(&ctx->ctrl_handler);
-			kfree(ctx->cc);
-			kfree(ctx);
-		}
-	}
-
-	return 0;
-}
-
+ *	Initialization and module stuff
+ * ------------------------------------------------------------------
+ */
 static int cal_complete_ctx(struct cal_ctx *ctx);
 
 static int cal_async_bound(struct v4l2_async_notifier *notifier,
@@ -1745,9 +1491,8 @@ static int cal_async_bound(struct v4l2_async_notifier *notifier,
 {
 	struct cal_ctx *ctx = notifier_to_ctx(notifier);
 	struct v4l2_subdev_mbus_code_enum mbus_code;
-	int i, j;
-
-	ctx_dbg(1, ctx, "cal_async_bound\n");
+	int ret = 0;
+	int i, j, k;
 
 	if (ctx->sensor) {
 		ctx_info(ctx, "Rejecting subdev %s (Already set!!)",
@@ -1756,27 +1501,42 @@ static int cal_async_bound(struct v4l2_async_notifier *notifier,
 	}
 
 	ctx->sensor = subdev;
-	ctx_info(ctx, "Using sensor %s for capture\n",
-		 subdev->name);
+	ctx_dbg(1, ctx, "Using sensor %s for capture\n", subdev->name);
 
-	/* setup the supported formats & indexes */
-	for (j = 0, i = 0; ; ++j) {
+	/* Enumerate sub device formats and enable all matching local formats */
+	ctx->num_active_fmt = 0;
+	for (j = 0, i = 0; ret != -EINVAL; ++j) {
 		struct cal_fmt *fmt;
-		int ret;
 
 		memset(&mbus_code, 0, sizeof(mbus_code));
 		mbus_code.index = j;
 		ret = v4l2_subdev_call(subdev, pad, enum_mbus_code,
 				       NULL, &mbus_code);
 		if (ret)
-			break;
-
-		fmt = (struct cal_fmt *)find_format_by_code(mbus_code.code);
-		if (!fmt)
 			continue;
 
-		fmt->supported = true;
-		fmt->index = i++;
+		ctx_dbg(2, ctx,
+			"subdev %s: code: %04x idx: %d\n",
+			subdev->name, mbus_code.code, j);
+
+		for (k = 0; k < ARRAY_SIZE(cal_formats); k++) {
+			fmt = &cal_formats[k];
+
+			if (mbus_code.code == fmt->code) {
+				ctx->active_fmt[i] = fmt;
+				ctx_dbg(2, ctx,
+					"matched fourcc: %s: code: %04x idx: %d\n",
+					fourcc_to_str(fmt->fourcc),
+					fmt->code, i);
+				ctx->num_active_fmt = ++i;
+			}
+		}
+	}
+
+	if (i == 0) {
+		ctx_err(ctx, "No suitable format reported by subdev %s\n",
+			subdev->name);
+		return -EINVAL;
 	}
 
 	cal_complete_ctx(ctx);
@@ -1787,8 +1547,29 @@ static int cal_async_bound(struct v4l2_async_notifier *notifier,
 static int cal_async_complete(struct v4l2_async_notifier *notifier)
 {
 	struct cal_ctx *ctx = notifier_to_ctx(notifier);
+	const struct cal_fmt *fmt;
+	struct v4l2_mbus_framefmt mbus_fmt;
+	int ret;
 
-	ctx_dbg(1, ctx, "cal_async_complete\n");
+	ret = __subdev_get_format(ctx, &mbus_fmt);
+	if (ret)
+		return ret;
+
+	fmt = find_format_by_code(ctx, mbus_fmt.code);
+	if (!fmt) {
+		ctx_dbg(3, ctx, "mbus code format (0x%08x) not found.\n",
+			mbus_fmt.code);
+		return -EINVAL;
+	}
+
+	/* Save current subdev format */
+	v4l2_fill_pix_format(&ctx->v_fmt.fmt.pix, &mbus_fmt);
+	ctx->v_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	ctx->v_fmt.fmt.pix.pixelformat  = fmt->fourcc;
+	cal_calc_format_size(ctx, fmt, &ctx->v_fmt);
+	ctx->fmt = fmt;
+	ctx->m_fmt = mbus_fmt;
+
 	return 0;
 }
 
@@ -1799,12 +1580,6 @@ static int cal_complete_ctx(struct cal_ctx *ctx)
 	int ret;
 
 	ctx->timeperframe = tpf_default;
-
-	ctx->width = 1920;
-	ctx->height = 1080;
-	ctx->field = V4L2_FIELD_NONE;
-	ctx->fmt = find_format_by_code(MEDIA_BUS_FMT_SGRBG8_1X8);
-	ctx->pixelsize = ctx->fmt->depth >> 3;
 	ctx->external_rate = 192000000;
 
 	/* initialize locks */
@@ -2019,7 +1794,6 @@ static int of_cal_create_instance(struct cal_ctx *ctx, int inst)
 	ctx_dbg(1, ctx, "Port: %d found sub-device %s\n",
 		inst, sensor_node->name);
 
-	ctx_dbg(1, ctx, "Asynchronous subdevice registration\n");
 	ctx->asd_list[0] = asd;
 	ctx->notifier.subdevs = ctx->asd_list;
 	ctx->notifier.num_subdevs = 1;
@@ -2051,9 +1825,10 @@ static struct cal_ctx *cal_create_instance(struct cal_dev *dev, int inst)
 	struct v4l2_ctrl_handler *hdl;
 	int ret;
 
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = devm_kzalloc(&dev->pdev->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
-		return 0;
+		return NULL;
+
 	/* save the cal_dev * for future ref */
 	ctx->dev = dev;
 
@@ -2061,123 +1836,121 @@ static struct cal_ctx *cal_create_instance(struct cal_dev *dev, int inst)
 		 "%s-%03d", CAL_MODULE_NAME, inst);
 	ret = v4l2_device_register(&dev->pdev->dev, &ctx->v4l2_dev);
 	if (ret)
-		goto free_ctx;
+		goto err_exit;
 
 	hdl = &ctx->ctrl_handler;
 	ret = v4l2_ctrl_handler_init(hdl, 11);
 	if (ret) {
 		ctx_err(ctx, "Failed to init ctrl handler\n");
-		goto free_hdl;
+		goto unreg_dev;
 	}
 	ctx->v4l2_dev.ctrl_handler = hdl;
 
 	/* Make sure Camera Core H/W register area is available */
-	ctx->cc = cc_create(dev, inst);
-	if (IS_ERR(ctx->cc)) {
-		ret = PTR_ERR(ctx->cc);
-		goto unreg_dev;
-	}
+	ctx->cc = dev->cc[inst];
 
 	/* Store the instance id */
 	ctx->csi2_port = inst + 1;
 
 	ret = of_cal_create_instance(ctx, inst);
 	if (ret) {
-		ctx_dbg(1, ctx, "Error scanning cal instance: %d\n", inst);
 		ret = -EINVAL;
-		goto free_cc;
+		goto free_hdl;
 	}
 	return ctx;
 
-free_cc:
-	kfree(ctx->cc);
 free_hdl:
 	v4l2_ctrl_handler_free(hdl);
 unreg_dev:
 	v4l2_device_unregister(&ctx->v4l2_dev);
-free_ctx:
-	kfree(ctx);
-	return 0;
+err_exit:
+	return NULL;
 }
+
+static const struct of_device_id cal_of_match[];
 
 static int cal_probe(struct platform_device *pdev)
 {
 	struct cal_dev *dev;
+	const struct of_device_id *match;
+	const struct cal_of_data *data;
 	int ret;
-	int irq, func;
-
-	dev_info(&pdev->dev, "Probing %s\n",
-		 CAL_MODULE_NAME);
+	int irq;
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 
+	match = of_match_device(of_match_ptr(cal_of_match), &pdev->dev);
+	if (match) {
+		if (match->data) {
+			data = match->data;
+			dev->flags = data->flags;
+		}
+	}
+
 	/* set pseudo v4l2 device name so we can use v4l2_printk */
-	strcpy(dev->v4l2_dev.name, CAL_MODULE_NAME);
+	strlcpy(dev->v4l2_dev.name, CAL_MODULE_NAME,
+		sizeof(dev->v4l2_dev.name));
 
 	/* save pdev pointer */
 	dev->pdev = pdev;
 
 	dev->res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-			"cal_top");
-	cal_dbg(1, dev, "ioresource %s at  %pa - %pa\n",
-		dev->res->name, &dev->res->start, &dev->res->end);
+						"cal_top");
+	dev->base = devm_ioremap_resource(&pdev->dev, dev->res);
+	if (IS_ERR(dev->base))
+		return PTR_ERR(dev->base);
 
-	dev->base = devm_ioremap(&pdev->dev, dev->res->start, SZ_32K);
-	if (!dev->base) {
-		ret = -ENOMEM;
-		goto just_exit;
-	}
+	cal_dbg(1, dev, "ioresource %s at %pa - %pa\n",
+		dev->res->name, &dev->res->start, &dev->res->end);
 
 	irq = platform_get_irq(pdev, 0);
 	cal_dbg(1, dev, "got irq# %d\n", irq);
 	ret = devm_request_irq(&pdev->dev, irq, cal_irq, 0, CAL_MODULE_NAME,
 			       dev);
 	if (ret)
-		goto just_exit;
+		return ret;
 
 	platform_set_drvdata(pdev, dev);
 
-	pm_runtime_enable(&pdev->dev);
-
-	ret = pm_runtime_get_sync(&pdev->dev);
-	if (ret)
-		goto just_exit;
-
-	/* Just check we can actually access the module */
-	cal_get_hwinfo(dev);
-
-	func = cal_read_field(dev, CAL_HL_REVISION, CAL_HL_REVISION_FUNC_MASK,
-			      CAL_HL_REVISION_FUNC_SHIFT);
-	cal_dbg(1, dev, "CAL HL_REVISION function %x\n", func);
-
 	dev->cm = cm_create(dev);
-	if (IS_ERR(dev->cm)) {
-		ret = PTR_ERR(dev->cm);
-		goto runtime_put;
-	}
+	if (IS_ERR(dev->cm))
+		return PTR_ERR(dev->cm);
+
+	dev->cc[0] = cc_create(dev, 0);
+	if (IS_ERR(dev->cc[0]))
+		return PTR_ERR(dev->cc[0]);
+
+	dev->cc[1] = cc_create(dev, 1);
+	if (IS_ERR(dev->cc[1]))
+		return PTR_ERR(dev->cc[1]);
+
 	dev->ctx[0] = NULL;
 	dev->ctx[1] = NULL;
 
 	dev->ctx[0] = cal_create_instance(dev, 0);
 	dev->ctx[1] = cal_create_instance(dev, 1);
 	if (!dev->ctx[0] && !dev->ctx[1]) {
-		ret = -ENODEV;
 		cal_err(dev, "Neither port is configured, no point in staying up\n");
-		goto free_ctx;
+		return -ENODEV;
 	}
+
+	pm_runtime_enable(&pdev->dev);
+
+	ret = cal_runtime_get(dev);
+	if (ret)
+		goto runtime_disable;
+
+	/* Just check we can actually access the module */
+	cal_get_hwinfo(dev);
+
+	cal_runtime_put(dev);
 
 	return 0;
 
-free_ctx:
-	kfree(dev->ctx[0]);
-	kfree(dev->ctx[1]);
-	kfree(dev->cm);
-runtime_put:
-	pm_runtime_put_sync(&pdev->dev);
+runtime_disable:
 	pm_runtime_disable(&pdev->dev);
-just_exit:
 	return ret;
 }
 
@@ -2185,27 +1958,50 @@ static int cal_remove(struct platform_device *pdev)
 {
 	struct cal_dev *dev =
 		(struct cal_dev *)platform_get_drvdata(pdev);
+	struct cal_ctx *ctx;
+	int i;
 
-	cal_info(dev, "Removing %s\n", CAL_MODULE_NAME);
+	cal_dbg(1, dev, "Removing %s\n", CAL_MODULE_NAME);
 
-	cal_release(dev);
+	cal_runtime_get(dev);
 
-	/* disable csi2 phy */
-	if (dev->ctx[0])
-		camerarx_phy_disable(dev->ctx[0]);
-	if (dev->ctx[1])
-		camerarx_phy_disable(dev->ctx[1]);
-	kfree(dev->cm);
+	for (i = 0; i < CAL_NUM_CONTEXT; i++) {
+		ctx = dev->ctx[i];
+		if (ctx) {
+			ctx_dbg(1, ctx, "unregistering %s\n",
+				video_device_node_name(&ctx->vdev));
+			camerarx_phy_disable(ctx);
+			v4l2_async_notifier_unregister(&ctx->notifier);
+			vb2_dma_contig_cleanup_ctx(ctx->alloc_ctx);
+			v4l2_ctrl_handler_free(&ctx->ctrl_handler);
+			v4l2_device_unregister(&ctx->v4l2_dev);
+			video_unregister_device(&ctx->vdev);
+		}
+	}
 
-	pm_runtime_put_sync(&pdev->dev);
+	cal_runtime_put(dev);
 	pm_runtime_disable(&pdev->dev);
 
 	return 0;
 }
 
 #if defined(CONFIG_OF)
+static const struct cal_of_data dra72_pre_es2_cal_of_data = {
+	/*
+	 * See DRA72x Errata: i913: CSI2 LDO Needs to be disabled
+	 * when module is powered on.
+	 */
+	.flags = DRA72_CAL_PRE_ES2_LDO_DISABLE,
+};
+
 static const struct of_device_id cal_of_match[] = {
-	{ .compatible = "ti,cal", },
+	{
+		.compatible = "ti,dra72-cal",
+	},
+	{
+		.compatible = "ti,dra72-pre-es2-cal",
+		.data = &dra72_pre_es2_cal_of_data,
+	},
 	{},
 };
 MODULE_DEVICE_TABLE(of, cal_of_match);

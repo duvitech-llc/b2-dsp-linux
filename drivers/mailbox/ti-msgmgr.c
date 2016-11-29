@@ -1,7 +1,7 @@
 /*
  * Texas Instruments' Message Manager Driver
  *
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Nishanth Menon
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,12 +26,24 @@
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
-#include <linux/ti-msgmgr.h>
+#include <linux/soc/ti/ti-msgmgr.h>
 
 #define Q_DATA_OFFSET(proxy, queue, reg)	\
 		     ((0x10000 * (proxy)) + (0x80 * (queue)) + ((reg) * 4))
 #define Q_STATE_OFFSET(queue)			((queue) * 0x4)
 #define Q_STATE_ENTRY_COUNT_MASK		(0xFFF000)
+
+/**
+ * struct ti_msgmgr_valid_queue_desc - SoC valid queues meant for this processor
+ * @queue_id:	Queue Number for this path
+ * @proxy_id:	Proxy ID representing the processor in SoC
+ * @is_tx:	Is this a receive path?
+ */
+struct ti_msgmgr_valid_queue_desc {
+	u8 queue_id;
+	u8 proxy_id;
+	bool is_tx;
+};
 
 /**
  * struct ti_msgmgr_desc - Description of message manager integration
@@ -44,6 +56,8 @@
  * @data_last_reg:	Last data register for proxy data region
  * @tx_polled:		Do I need to use polled mechanism for tx
  * @tx_poll_timeout_ms: Timeout in ms if polled
+ * @valid_queues:	List of Valid queues that the processor can access
+ * @num_valid_queues:	Number of valid queues
  *
  * This structure is used in of match data to describe how integration
  * for a specific compatible SoC is done.
@@ -58,6 +72,8 @@ struct ti_msgmgr_desc {
 	u8 data_last_reg;
 	bool tx_polled;
 	int tx_poll_timeout_ms;
+	const struct ti_msgmgr_valid_queue_desc *valid_queues;
+	int num_valid_queues;
 };
 
 /**
@@ -74,9 +90,9 @@ struct ti_msgmgr_desc {
  * @rx_buff:	Receive buffer pointer allocated at probe, max_message_size
  */
 struct ti_queue_inst {
-	const char *name;
-	u32 queue_id;
-	u32 proxy_id;
+	char name[30];
+	u8 queue_id;
+	u8 proxy_id;
 	int irq;
 	bool is_tx;
 	void __iomem *queue_buff_start;
@@ -166,15 +182,16 @@ static irqreturn_t ti_msgmgr_queue_rx_interrupt(int irq, void *p)
 	/* Do I actually have messages to read? */
 	msg_count = ti_msgmgr_queue_get_num_messages(qinst);
 	if (!msg_count) {
+		/* Shared IRQ? */
 		dev_dbg(dev, "Spurious event - 0 pending data!\n");
 		return IRQ_NONE;
 	}
 
 	/*
 	 * I have no idea about the protocol being used to communicate with the
-	 * remote producer - 0 is valid data, so I wont make a judgement of how
-	 * many bytes I should be reading. Let the client figure this out.. I
-	 * just read the full message and pass it on..
+	 * remote producer - 0 could be valid data, so I wont make a judgement
+	 * of how many bytes I should be reading. Let the client figure this
+	 * out.. I just read the full message and pass it on..
 	 */
 	desc = inst->desc;
 	message.len = desc->max_message_size;
@@ -186,8 +203,11 @@ static irqreturn_t ti_msgmgr_queue_rx_interrupt(int irq, void *p)
 	 * support for data splitting.  We don't want the hardware to misbehave
 	 * with sub 32bit access - For example: if the last register read is
 	 * split into byte wise access, it can result in the queue getting
-	 * stuck or indeterminate behavior. Hence, we do not use memcpy_fromio
-	 * here.
+	 * stuck or indeterminate behavior. An out of order read operation may
+	 * result in weird data results as well.
+	 * Hence, we do not use memcpy_fromio or __ioread32_copy here, instead
+	 * we depend on readl for the purpose.
+	 *
 	 * Also note that the final register read automatically marks the
 	 * queue message as read.
 	 */
@@ -259,7 +279,7 @@ static int ti_msgmgr_send_data(struct mbox_chan *chan, void *data)
 	struct ti_msgmgr_inst *inst = dev_get_drvdata(dev);
 	const struct ti_msgmgr_desc *desc;
 	struct ti_queue_inst *qinst = chan->con_priv;
-	int msg_count, num_words, trail_bytes;
+	int num_words, trail_bytes;
 	struct ti_msgmgr_message *message = data;
 	void __iomem *data_reg;
 	u32 *word_data;
@@ -276,23 +296,7 @@ static int ti_msgmgr_send_data(struct mbox_chan *chan, void *data)
 		return -EINVAL;
 	}
 
-	/* Are we able to send this or not? */
-	msg_count = ti_msgmgr_queue_get_num_messages(qinst);
-	if (msg_count >= desc->max_messages) {
-		dev_warn(dev, "Queue %s is full (%d messages)\n", qinst->name,
-			 msg_count);
-		return -EBUSY;
-	}
-
-	/*
-	 * NOTE about register access involved here:
-	 * the hardware block is implemented with 32bit access operations and no
-	 * support for data splitting.  We don't want the hardware to misbehave
-	 * with sub 32bit access - For example: if the last register write is
-	 * split into byte wise access, it can result in the queue getting
-	 * stuck or dummy messages being transmitted or indeterminate behavior.
-	 * Hence, we do not use memcpy_toio here.
-	 */
+	/* NOTE: Constraints similar to rx path exists here as well */
 	for (data_reg = qinst->queue_buff_start,
 	     num_words = message->len / sizeof(u32),
 	     word_data = (u32 *)message->buf;
@@ -332,8 +336,7 @@ static int ti_msgmgr_queue_startup(struct mbox_chan *chan)
 
 	if (!qinst->is_tx) {
 		/*
-		 * With the expectation that the IRQ might be shared in
-		 * future
+		 * With the expectation that the IRQ might be shared in SoC
 		 */
 		ret = request_irq(qinst->irq, ti_msgmgr_queue_rx_interrupt,
 				  IRQF_SHARED, qinst->name, chan);
@@ -371,33 +374,104 @@ static struct mbox_chan *ti_msgmgr_of_xlate(struct mbox_controller *mbox,
 					    const struct of_phandle_args *p)
 {
 	struct ti_msgmgr_inst *inst;
-	struct device_node *np;
-	phandle phandle = p->args[0];
+	int req_qid, req_pid;
 	struct ti_queue_inst *qinst;
 	int i;
-	struct mbox_chan *chan = ERR_PTR(-ENOENT);
 
 	inst = container_of(mbox, struct ti_msgmgr_inst, mbox);
 	if (WARN_ON(!inst))
 		return ERR_PTR(-EINVAL);
 
-	np = of_find_node_by_phandle(phandle);
-	if (!np) {
-		dev_err(inst->dev, "Unable to find phandle %p\n", p);
-		return ERR_PTR(-ENODEV);
+	/* #mbox-cells is 2 */
+	if (p->args_count != 2) {
+		dev_err(inst->dev, "Invalid arguments in dt[%d] instead of 2\n",
+			p->args_count);
+		return ERR_PTR(-EINVAL);
 	}
+	req_qid = p->args[0];
+	req_pid = p->args[1];
 
 	for (qinst = inst->qinsts, i = 0; i < inst->num_valid_queues;
 	     i++, qinst++) {
-		/* not using strncmp: What could be a valid length here?? */
-		if (!strcmp(qinst->name, np->name)) {
-			chan = qinst->chan;
-			break;
-		}
+		if (req_qid == qinst->queue_id && req_pid == qinst->proxy_id)
+			return qinst->chan;
 	}
-	of_node_put(np);
 
-	return chan;
+	dev_err(inst->dev, "Queue ID %d, Proxy ID %d is wrong on %s\n",
+		req_qid, req_pid, p->np->name);
+	return ERR_PTR(-ENOENT);
+}
+
+/**
+ * ti_msgmgr_queue_setup() - Setup data structures for each queue instance
+ * @idx:	index of the queue
+ * @dev:	pointer to the message manager device
+ * @np:		pointer to the of node
+ * @inst:	Queue instance pointer
+ * @d:		Message Manager instance description data
+ * @qd:		Queue description data
+ * @qinst:	Queue instance pointer
+ * @chan:	pointer to mailbox channel
+ *
+ * Return: 0 if all went well, else return corresponding error
+ */
+static int ti_msgmgr_queue_setup(int idx, struct device *dev,
+				 struct device_node *np,
+				 struct ti_msgmgr_inst *inst,
+				 const struct ti_msgmgr_desc *d,
+				 const struct ti_msgmgr_valid_queue_desc *qd,
+				 struct ti_queue_inst *qinst,
+				 struct mbox_chan *chan)
+{
+	qinst->proxy_id = qd->proxy_id;
+	qinst->queue_id = qd->queue_id;
+
+	if (qinst->queue_id > d->queue_count) {
+		dev_err(dev, "Queue Data [idx=%d] queuid %d > %d\n",
+			idx, qinst->queue_id, d->queue_count);
+		return -ERANGE;
+	}
+
+	qinst->is_tx = qd->is_tx;
+	snprintf(qinst->name, sizeof(qinst->name), "%s %s_%03d_%03d",
+		 dev_name(dev), qinst->is_tx ? "tx" : "rx", qinst->queue_id,
+		 qinst->proxy_id);
+
+	if (!qinst->is_tx) {
+		char of_rx_irq_name[7];
+
+		snprintf(of_rx_irq_name, sizeof(of_rx_irq_name),
+			 "rx_%03d", qinst->queue_id);
+
+		qinst->irq = of_irq_get_byname(np, of_rx_irq_name);
+		if (qinst->irq < 0) {
+			dev_crit(dev,
+				 "[%d]QID %d PID %d:No IRQ[%s]: %d\n",
+				 idx, qinst->queue_id, qinst->proxy_id,
+				 of_rx_irq_name, qinst->irq);
+			return qinst->irq;
+		}
+		/* Allocate usage buffer for rx */
+		qinst->rx_buff = devm_kzalloc(dev,
+					      d->max_message_size, GFP_KERNEL);
+		if (!qinst->rx_buff)
+			return -ENOMEM;
+	}
+
+	qinst->queue_buff_start = inst->queue_proxy_region +
+	    Q_DATA_OFFSET(qinst->proxy_id, qinst->queue_id, d->data_first_reg);
+	qinst->queue_buff_end = inst->queue_proxy_region +
+	    Q_DATA_OFFSET(qinst->proxy_id, qinst->queue_id, d->data_last_reg);
+	qinst->queue_state = inst->queue_state_debug_region +
+	    Q_STATE_OFFSET(qinst->queue_id);
+	qinst->chan = chan;
+
+	chan->con_priv = qinst;
+
+	dev_dbg(dev, "[%d] qidx=%d pidx=%d irq=%d q_s=%p q_e = %p\n",
+		idx, qinst->queue_id, qinst->proxy_id, qinst->irq,
+		qinst->queue_buff_start, qinst->queue_buff_end);
+	return 0;
 }
 
 /* Queue operations */
@@ -410,6 +484,20 @@ static const struct mbox_chan_ops ti_msgmgr_chan_ops = {
 };
 
 /* Keystone K2G SoC integration details */
+static const struct ti_msgmgr_valid_queue_desc k2g_valid_queues[] = {
+	{.queue_id = 0, .proxy_id = 0, .is_tx = true,},
+	{.queue_id = 1, .proxy_id = 0, .is_tx = true,},
+	{.queue_id = 2, .proxy_id = 0, .is_tx = true,},
+	{.queue_id = 3, .proxy_id = 0, .is_tx = true,},
+	{.queue_id = 5, .proxy_id = 2, .is_tx = false,},
+	{.queue_id = 56, .proxy_id = 1, .is_tx = true,},
+	{.queue_id = 57, .proxy_id = 2, .is_tx = false,},
+	{.queue_id = 58, .proxy_id = 3, .is_tx = true,},
+	{.queue_id = 59, .proxy_id = 4, .is_tx = true,},
+	{.queue_id = 60, .proxy_id = 5, .is_tx = true,},
+	{.queue_id = 61, .proxy_id = 6, .is_tx = true,},
+};
+
 static const struct ti_msgmgr_desc k2g_desc = {
 	.queue_count = 64,
 	.max_message_size = 64,
@@ -419,11 +507,12 @@ static const struct ti_msgmgr_desc k2g_desc = {
 	.data_first_reg = 16,
 	.data_last_reg = 31,
 	.tx_polled = false,
+	.valid_queues = k2g_valid_queues,
+	.num_valid_queues = ARRAY_SIZE(k2g_valid_queues),
 };
 
 static const struct of_device_id ti_msgmgr_of_match[] = {
 	{.compatible = "ti,k2g-message-manager", .data = &k2g_desc},
-	{.compatible = "ti,message-manager", .data = &k2g_desc},
 	{ /* Sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, ti_msgmgr_of_match);
@@ -432,7 +521,7 @@ static int ti_msgmgr_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	const struct of_device_id *of_id;
-	struct device_node *np, *child;
+	struct device_node *np;
 	struct resource *res;
 	const struct ti_msgmgr_desc *desc;
 	struct ti_msgmgr_inst *inst;
@@ -442,6 +531,7 @@ static int ti_msgmgr_probe(struct platform_device *pdev)
 	int queue_count;
 	int i;
 	int ret = -EINVAL;
+	const struct ti_msgmgr_valid_queue_desc *queue_desc;
 
 	if (!dev->of_node) {
 		dev_err(dev, "no OF information\n");
@@ -478,14 +568,10 @@ static int ti_msgmgr_probe(struct platform_device *pdev)
 	dev_dbg(dev, "proxy region=%p, queue_state=%p\n",
 		inst->queue_proxy_region, inst->queue_state_debug_region);
 
-	queue_count = of_get_available_child_count(np);
-	if (!queue_count) {
-		dev_err(dev, "No child nodes representing queues\n");
-		return -EINVAL;
-	}
-	if (queue_count > desc->queue_count) {
-		dev_err(dev, "Number of queues %d > max %d\n",
-			queue_count, desc->queue_count);
+	queue_count = desc->num_valid_queues;
+	if (!queue_count || queue_count > desc->queue_count) {
+		dev_crit(dev, "Invalid Number of queues %d. Max %d\n",
+			 queue_count, desc->queue_count);
 		return -ERANGE;
 	}
 	inst->num_valid_queues = queue_count;
@@ -500,62 +586,12 @@ static int ti_msgmgr_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	inst->chans = chans;
 
-	for (i = 0, child = NULL; i < queue_count; i++, qinst++, chans++) {
-		child = of_get_next_available_child(np, child);
-		ret = of_property_read_u32(child, "ti,queue-id",
-					   &qinst->queue_id);
-		if (ret) {
-			dev_err(dev, "Child node %s[idx=%d] has no queue-id\n",
-				child->name, i);
-			return -EINVAL;
-		}
-		if (qinst->queue_id > desc->queue_count) {
-			dev_err(dev, "Child node %s[idx=%d] queuid %d > %d\n",
-				child->name, i, qinst->queue_id,
-				desc->queue_count);
-			return -ERANGE;
-		}
-
-		ret = of_property_read_u32(child, "ti,proxy-id",
-					   &qinst->proxy_id);
-		if (ret) {
-			dev_err(dev, "Child node %s[idx=%d] has no proxy-id\n",
-				child->name, i);
-			return -EINVAL;
-		}
-
-		qinst->irq = of_irq_get_byname(child, "rx");
-		/* TX queues don't have IRQ numbers */
-		if (qinst->irq < 0) {
-			qinst->irq = -1;
-			qinst->is_tx = true;
-		}
-
-		qinst->queue_buff_start = inst->queue_proxy_region +
-		    Q_DATA_OFFSET(qinst->proxy_id, qinst->queue_id,
-				  desc->data_first_reg);
-		qinst->queue_buff_end = inst->queue_proxy_region +
-		    Q_DATA_OFFSET(qinst->proxy_id, qinst->queue_id,
-				  desc->data_last_reg);
-		qinst->queue_state = inst->queue_state_debug_region +
-		    Q_STATE_OFFSET(qinst->queue_id);
-		qinst->name = child->name;
-		qinst->chan = chans;
-
-		/* Allocate usage buffer for rx */
-		if (!qinst->is_tx) {
-			qinst->rx_buff = devm_kzalloc(dev,
-						      desc->max_message_size,
-						      GFP_KERNEL);
-			if (!qinst->rx_buff)
-				return -ENOMEM;
-		}
-
-		chans->con_priv = qinst;
-
-		dev_dbg(dev, "[%d] qidx=%d pidx=%d irq=%d q_s=%p q_e = %p\n",
-			i, qinst->queue_id, qinst->proxy_id, qinst->irq,
-			qinst->queue_buff_start, qinst->queue_buff_end);
+	for (i = 0, queue_desc = desc->valid_queues;
+	     i < queue_count; i++, qinst++, chans++, queue_desc++) {
+		ret = ti_msgmgr_queue_setup(i, dev, np, inst,
+					    desc, queue_desc, qinst, chans);
+		if (ret)
+			return ret;
 	}
 
 	mbox = &inst->mbox;

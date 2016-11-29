@@ -44,6 +44,10 @@
 /* The feature bitmap for virtio rpmsg */
 #define VIRTIO_RPMSG_F_NS	0 /* RP supports name service notifications */
 
+/* lockdep subclasses for use with ept cb_lock mutex nested calls */
+#define RPMSG_LOCKDEP_SUBCLASS_NORMAL   0 /* regular ept cb_lock */
+#define RPMSG_LOCKDEP_SUBCLASS_NS       1 /* name service ept cb_lock */
+
 /**
  * struct rpmsg_hdr - common header for all rpmsg messages
  * @src: source address
@@ -129,6 +133,7 @@ typedef void (*rpmsg_rx_cb_t)(struct rpmsg_channel *, void *, int, void *, u32);
  * @refcount: when this drops to zero, the ept is deallocated
  * @cb: rx callback handler
  * @cb_lock: must be taken before accessing/changing @cb
+ * @cb_lockdep_class: mutex lockdep class to be used with @cb_lock
  * @addr: local rpmsg address
  * @priv: private data for the driver's use
  *
@@ -151,6 +156,7 @@ struct rpmsg_endpoint {
 	struct kref refcount;
 	rpmsg_rx_cb_t cb;
 	struct mutex cb_lock;
+	int cb_lockdep_class;
 	u32 addr;
 	void *priv;
 };
@@ -173,7 +179,7 @@ struct rpmsg_driver {
 
 int register_rpmsg_device(struct rpmsg_channel *dev);
 void unregister_rpmsg_device(struct rpmsg_channel *dev);
-int register_rpmsg_driver(struct rpmsg_driver *drv);
+int __register_rpmsg_driver(struct rpmsg_driver *drv, struct module *owner);
 void unregister_rpmsg_driver(struct rpmsg_driver *drv);
 void rpmsg_destroy_ept(struct rpmsg_endpoint *);
 struct rpmsg_endpoint *rpmsg_create_ept(struct rpmsg_channel *,
@@ -185,6 +191,22 @@ struct rpmsg_channel *rpmsg_create_channel(struct virtproc_info *vrp,
 					   const char *name, const char *desc,
 					   int src, int dst);
 int rpmsg_destroy_channel(struct rpmsg_channel *rpdev);
+
+/* use a macro to avoid include chaining to get THIS_MODULE */
+#define register_rpmsg_driver(drv) \
+	__register_rpmsg_driver(drv, THIS_MODULE)
+
+/**
+ * module_rpmsg_driver() - Helper macro for registering an rpmsg driver
+ * @__rpmsg_driver: rpmsg_driver struct
+ *
+ * Helper macro for rpmsg drivers which do not do anything special in module
+ * init/exit. This eliminates a lot of boilerplate.  Each module may only
+ * use this macro once, and calling it replaces module_init() and module_exit()
+ */
+#define module_rpmsg_driver(__rpmsg_driver) \
+	module_driver(__rpmsg_driver, register_rpmsg_driver, \
+			unregister_rpmsg_driver)
 
 /**
  * rpmsg_send() - send a message across to the remote processor

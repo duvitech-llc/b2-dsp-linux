@@ -31,7 +31,9 @@ OMAP USB2 PHY
 
 Required properties:
  - compatible: Should be "ti,omap-usb2"
-	       Should be "ti,dra746-usb2-phy2" for the 2nd instance of USB2 PHY
+	       Should be "ti,dra7x-usb2" for the 1st instance of USB2 PHY on
+	       DRA7x
+	       Should be "ti,dra7x-usb2-phy2" for the 2nd instance of USB2 PHY
 	       in DRA7x
  - reg : Address and length of the register set for the device.
  - #phy-cells: determine the number of cells that should be given in the
@@ -91,8 +93,6 @@ Optional properties:
    register that contains the SATA_PLL_SOFT_RESET bit. Only valid for sata_phy.
  - syscon-pcs : phandle/offset pair. Phandle to the system control module and the
    register offset to write the PCS delay value.
- - "ti,configure-as-pcie" : property to indicate if the PHY should be
-   configured as PCIE PHY.
 
 Deprecated properties:
  - ctrl-module : phandle of the control module used by PHY driver to power on
@@ -129,7 +129,7 @@ sata_phy: phy@4A096000 {
 	ctrl-module = <&omap_control_sata>;
 	clocks = <&sys_clkin1>, <&sata_ref_clk>;
 	clock-names = "sysclk", "refclk";
-	syscon-pllreset = <&dra7_ctrl_core 0x3fc>;
+	syscon-pllreset = <&scm_conf 0x3fc>;
 	#phy-cells = <0>;
 
 TI Keystone SerDes PHY
@@ -142,8 +142,6 @@ Required properties:
 	* "ti,keystone-serdes-pcie"
  - reg:
 	* base address and length of the SerDes register set
- - #phy-cells:
-	* From the generic phy bindings, must be 0;
  - num-lanes:
 	* Number of lanes in SerDes.
 
@@ -168,6 +166,8 @@ the "status" property.  If a lane is not represented by a node, the
 lane is disabled.
 
 Required properties (lane sub-node):
+ - #phy-cells:
+	* From the generic phy bindings, must be 0;
  - reg:
 	* lane number
 
@@ -195,62 +195,102 @@ Example for Keystone K2E GBE:
 -----------------------------
 
 gbe_serdes0: phy@232a000 {
-	#phy-cells		= <0>;
 	compatible		= "ti,keystone-serdes-gbe";
 	reg			= <0x0232a000 0x2000>;
 	link-rate-kbps		= <1250000>;
 	num-lanes		= <4>;
-	lanes {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		lane@0 {
-			/*loopback;*/
-			reg		= <0>;
-			control-rate	= <2>; /* quart */
-			rx-start	= <7 5>;
-			rx-force	= <1 1>;
-			tx-coeff	= <0 0 0 12 4>;
-			       /* c1 c2 cm att vreg */
-		};
-		lane@1 {
-			/*loopback;*/
-			reg		= <1>;
-			control-rate	= <2>; /* quart */
-			rx-start	= <7 5>;
-			rx-force	= <1 1>;
-			tx-coeff	= <0 0 0 12 4>;
-			       /* c1 c2 cm att vreg */
-		};
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	serdes0_lane0: lane@0 {
+		status		= "ok";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <0>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	serdes0_lane1: lane@1 {
+		status		= "ok";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <1>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	serdes0_lane2: lane@2 {
+		status		= "disabled";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <2>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	serdes0_lane3: lane@3 {
+		status		= "disabled";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <3>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
 	};
 };
 
 gbe_serdes1: phy@2324000 {
-	#phy-cells		= <0>;
 	compatible		= "ti,keystone-serdes-gbe";
 	reg			= <0x02324000 0x2000>;
 	link-rate-kbps		= <1250000>;
 	num-lanes		= <4>;
-	lanes {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		lane@0 {
-			/*loopback;*/
-			reg		= <0>;
-			control-rate	= <2>; /* quart */
-			rx-start	= <7 5>;
-			rx-force	= <1 1>;
-			tx-coeff	= <0 0 0 12 4>;
-			       /* c1 c2 cm att vreg */
-		};
-		lane@1 {
-			/*loopback;*/
-			reg		= <1>;
-			control-rate	= <2>; /* quart */
-			rx-start	= <7 5>;
-			rx-force	= <1 1>;
-			tx-coeff	= <0 0 0 12 4>;
-			       /* c1 c2 cm att vreg */
-		};
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	serdes1_lane0: lane@0 {
+		status		= "disabled";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <0>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	serdes1_lane1: lane@1 {
+		status		= "disabled";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <1>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	serdes1_lane2: lane@2 {
+		status		= "disabled";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <2>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	serdes1_lane3: lane@3 {
+		status		= "disabled";
+		/*loopback;*/
+		#phy-cells	= <0>;
+		reg		= <3>;
+		control-rate	= <2>; /* quart */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
 	};
 };
 
@@ -263,7 +303,14 @@ netcp: netcp@24000000 {
 		gbe@200000 { /* ETHSS */
 			...
 
-			phys = <&gbe_serdes0>, <&gbe_serdes1>;
+			gbe0: interface-0 {
+				phys = <&serdes0_lane0>;
+				...
+			};
+			gbe1: interface-1 {
+				phys = <&serdes0_lane1>;
+				...
+			};
 
 			...
 		};
@@ -276,21 +323,15 @@ Example for Keystone PCIE:
 --------------------------
 
 	pcie0_phy: phy@2320000 {
-		#phy-cells = <0>;
 		compatible = "ti,keystone-serdes-pcie";
 		reg = <0x02320000 0x4000>;
 		link-rate-kbps = <5000000>;
 		num-lanes = <2>;
 	};
 
-
-Then the PHY can be used in PCIe controller node as
-
-	pcie0: pcie@21800000 {
-		...
-
-		phys = <&pcie0_phy>;
-	}
+No SerDes phy handle needed in PCIe controller node
+since the SerDes PHY provider driver performs all
+the configurations needed for PCIe.
 
 Example for K2E 10GBE:
 ----------------------
@@ -315,34 +356,32 @@ Define the 10gbe SerDes node:
 
 xgbe_serdes: phy@231e000 {
 	status			= "ok";
-	#phy-cells		= <0>;
 	compatible		= "ti,keystone-serdes-xgbe";
 	reg			= <0x0231e000 0x2000>;
 	link-rate-kbps		= <10312500>;
 	num-lanes		= <2>;
 	syscon-peripheral	= <&xgbe_subsys>;
 	syscon-link		= <&xgbe_pcsr>;
-	lanes {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		lane@0 {
-			/*loopback;*/
-			reg		= <0>;
-			control-rate	= <0>; /* full */
-			rx-start	= <7 5>;
-			rx-force	= <1 1>;
-			tx-coeff	= <2 0 0 12 4>;
-				/* c1 c2 cm att vreg */
-		};
-		lane@1 {
-			/*loopback;*/
-			reg		= <1>;
-			control-rate	= <0>; /* full */
-			rx-start	= <7 5>;
-			rx-force	= <1 1>;
-			tx-coeff	= <2 0 0 12 4>;
-				/* c1 c2 cm att vreg */
-		};
+	#address-cells  = <1>;
+	#size-cells     = <0>;
+
+	xserdes_lane0: lane@0 {
+		status		= "ok";
+		#phy-cells	= <0>;
+		reg		= <0>;
+		control-rate	= <0>; /* full */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <2 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	xserdes_lane1: lane@1 {
+		status		= "ok";
+		#phy-cells	= <0>;
+		reg		= <1>;
+		control-rate	= <0>; /* full */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <2 0 0 12 4>; /* c1 c2 cm att vreg */
 	};
 };
 
@@ -360,9 +399,14 @@ netcpx: netcpx@2f00000 {
 
 			...
 
-			syscon-subsys = <&xgbe_subsys>;
-			syscon-pcsr = <&xgbe_pcsr>;
-			phys = <&xgbe_serdes>;
+			xgbe0: interface-0 {
+				phys = <&xserdes_lane0>;
+				...
+			};
+			xgbe1: interface-1 {
+				phys = <&xserdes_lane1>;
+				...
+			};
 
 			...
 		};
@@ -370,4 +414,126 @@ netcpx: netcpx@2f00000 {
 
 	...
 
+};
+
+TI Keystone 10gbe SerDes PHY
+============================
+
+For 10gbe, there is an option of using an 10gbe MCU firmware.
+When the firmware is enabled, the individual lanes can be configured
+with the following in a mcu-firmware sub-node under the 10gbe SerDes
+node:
+
+lane:		Lane number.
+		- 0 -> Lane 0 (default)
+		- 1 -> Lane 1
+rate:		Link rate:
+		- 0 -> 1G/10G (default)
+		- 1 -> Force 1G
+		- 2 -> Force 10G
+autonegotiate:	Set to enable link rate autonegotiation when rate == 1G/10G.
+		- 0 -> disabled (default)
+		- 1 -> enabled
+tx_pause:	Enable TX pause frame generation.
+		- 0 -> disabled (default)
+		- 1 -> enabled
+rx_pause:	Enable RX pause frame generation.
+		- 0 -> disabled (default)
+		- 1 -> enabled
+10g_train:	Enable 10G link training.
+		- 0 -> disabled (default)
+		- 1 -> enabled
+fec:		Enable Forward Error Correction.
+		- 0 -> disabled (default)
+		- 1 -> enabled
+
+When 10gbe MCU firmware is used, the regular SerDes lane
+bindings should be disabled. 10gbe MCU firmware and regular
+SerDes lane bindings are mutually exclusive. See "Example:
+for Enabling K2E 10-GBE MCU Firmware" below.
+
+
+Example for Keystone K2E 10-GBE MCU Firmware Bindings:
+------------------------------------------------------
+
+xgbe_serdes: phy@231e000 {
+
+	status		= "disabled";
+
+	...
+
+	xserdes_lane0: lane@0 {
+		status		= "disabled";
+		#phy-cells	= <0>;
+		reg		= <0>;
+		control-rate	= <0>; /* full */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <2 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+	xserdes_lane1: lane@1 {
+		status		= "disabled";
+		#phy-cells	= <0>;
+		reg		= <1>;
+		control-rate	= <0>; /* full */
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <2 0 0 12 4>; /* c1 c2 cm att vreg */
+	};
+
+	mcu-firmware {
+		status = "disabled";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		lane@0 {
+			status = "disabled";
+			reg = <0>;
+			rate = <0>; /* 0 = default
+				       1 = 1g
+				       2 = 10g */
+			autonegotiate;
+			/*tx_pause;*/
+			/*rx_pause;*/
+			10g_train;
+			/*fec;*/
+		};
+		lane@1 {
+			status = "disabled";
+			reg = <1>;
+			rate = <0>; /* 0 = default
+				       1 = 1g
+				       2 = 10g */
+			autonegotiate;
+			/*tx_pause;*/
+			/*rx_pause;*/
+			10g_train;
+			/*fec;*/
+		};
+	};
+};
+
+Example for Enabling K2E 10-GBE MCU Firmware:
+---------------------------------------------
+
+&xgbe_serdes {
+	status		= "ok";
+
+	xserdes_lane0: lane@0 {
+		status		= "disabled";
+	};
+	xserdes_lane1: lane@1 {
+		status		= "disabled";
+	};
+
+	mcu-firmware {
+		status = "ok";
+
+		lane@0 {
+			status = "ok";
+		};
+
+		lane@1 {
+			status = "ok";
+		};
+	};
 };

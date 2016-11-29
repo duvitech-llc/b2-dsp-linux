@@ -14,18 +14,21 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/clk.h>
+#include <linux/cpuidle.h>
+#include <asm/cpuidle.h>
 #include <linux/platform_data/gpio-omap.h>
 #include <linux/pinctrl/pinmux.h>
 #include <linux/wkup_m3_ipc.h>
 #include <linux/of.h>
 #include <linux/rtc.h>
-
 #include <asm/smp_scu.h>
 #include <asm/suspend.h>
+#include <linux/platform_data/pm33xx.h>
 
 #include "control.h"
-#include "cm33xx.h"
 #include "pm.h"
+#include "cm33xx.h"
 #include "prm33xx.h"
 #include "common.h"
 #include "clockdomain.h"
@@ -41,6 +44,13 @@ static void __iomem *scu_base;
 static struct omap_hwmod *rtc_oh;
 
 static struct pinctrl_dev *pmx_dev;
+static int (*idle_fn)(u32 wfi_flags);
+
+struct amx3_idle_state {
+	int wfi_flags;
+};
+
+static struct amx3_idle_state *idle_states;
 
 static int __init am43xx_map_scu(void)
 {
@@ -63,7 +73,7 @@ static int am43xx_check_off_mode_enable(void)
 	return enable_off_mode;
 }
 
-static int amx3_common_init(void)
+static int amx3_common_init(int (*idle)(u32 wfi_flags))
 {
 	gfx_pwrdm = pwrdm_lookup("gfx_pwrdm");
 	per_pwrdm = pwrdm_lookup("per_pwrdm");
@@ -81,10 +91,12 @@ static int amx3_common_init(void)
 	else
 		pr_err("PM: Failed to get cefuse_pwrdm\n");
 
+	idle_fn = idle;
+
 	return 0;
 }
 
-static int am33xx_suspend_init(void (*do_sram_cpuidle)(u32 wfi_flags))
+static int am33xx_suspend_init(int (*idle)(u32 wfi_flags))
 {
 	int ret;
 
@@ -95,14 +107,12 @@ static int am33xx_suspend_init(void (*do_sram_cpuidle)(u32 wfi_flags))
 		return -ENODEV;
 	}
 
-	am33xx_idle_init(true, do_sram_cpuidle);
-
-	ret = amx3_common_init();
+	ret = amx3_common_init(idle);
 
 	return ret;
 }
 
-static int am43xx_suspend_init(void (*do_sram_cpuidle)(u32 wfi_flags))
+static int am43xx_suspend_init(int (*idle)(u32 wfi_flags))
 {
 	int ret = 0;
 
@@ -114,16 +124,15 @@ static int am43xx_suspend_init(void (*do_sram_cpuidle)(u32 wfi_flags))
 		return ret;
 	}
 
-	am437x_idle_init();
-
-	if (ret) {
-		pr_err("PM: Could not ioremap GIC\n");
-		return ret;
-	}
-
-	ret = amx3_common_init();
+	ret = amx3_common_init(idle);
 
 	return ret;
+}
+
+static int amx3_suspend_deinit(void)
+{
+	idle_fn = NULL;
+	return 0;
 }
 
 static void amx3_pre_suspend_common(void)
@@ -138,7 +147,6 @@ static void amx3_post_suspend_common(void)
 	 * Because gfx_pwrdm is the only one under MPU control,
 	 * comment on transition status
 	 */
-
 	status = pwrdm_read_pwrst(gfx_pwrdm);
 	if (status != PWRDM_POWER_OFF)
 		pr_err("PM: GFX domain did not transition: %x\n", status);
@@ -187,7 +195,24 @@ static int am33xx_cpu_suspend(int (*fn)(unsigned long), unsigned long args)
 {
 	int ret = 0;
 
+	if (omap_irq_pending() || need_resched())
+		return ret;
+
 	ret = cpu_suspend(args, fn);
+
+	return ret;
+}
+
+static int am43xx_cpu_suspend(int (*fn)(unsigned long), unsigned long args)
+{
+	int ret = 0;
+
+	if (!scu_base)
+		return 0;
+
+	scu_power_mode(scu_base, SCU_PM_DORMANT);
+	ret = cpu_suspend(args, fn);
+	scu_power_mode(scu_base, SCU_PM_NORMAL);
 
 	return ret;
 }
@@ -237,7 +262,10 @@ static void am43xx_restore_context(void)
 {
 	common_restore_context();
 	am43xx_control_restore_context();
-
+	/*
+	 * HACK: restore dpll_per_clkdcoldo register contents, to avoid
+	 * breaking suspend-resume
+	 */
 	writel_relaxed(0x0, AM33XX_L4_WK_IO_ADDRESS(0x44df2e14));
 }
 
@@ -258,10 +286,12 @@ void __iomem *am43xx_get_rtc_base_addr(void)
 	return omap_hwmod_get_mpu_rt_va(rtc_oh);
 }
 
-static struct am33xx_pm_ops am33xx_ops = {
+static struct am33xx_pm_platform_data am33xx_pdata = {
 	.init = am33xx_suspend_init,
+	.deinit = amx3_suspend_deinit,
 	.soc_suspend = am33xx_suspend,
 	.cpu_suspend = am33xx_cpu_suspend,
+	.pm_sram_addr = &am33xx_pm_sram,
 	.save_context = am33xx_save_context,
 	.restore_context = am33xx_restore_context,
 	.prepare_rtc_suspend = am43xx_prepare_rtc_suspend,
@@ -270,9 +300,12 @@ static struct am33xx_pm_ops am33xx_ops = {
 	.get_rtc_base_addr = am43xx_get_rtc_base_addr,
 };
 
-static struct am33xx_pm_ops am43xx_ops = {
+static struct am33xx_pm_platform_data am43xx_pdata = {
 	.init = am43xx_suspend_init,
+	.deinit = amx3_suspend_deinit,
 	.soc_suspend = am43xx_suspend,
+	.cpu_suspend = am43xx_cpu_suspend,
+	.pm_sram_addr = &am43xx_pm_sram,
 	.save_context = am43xx_save_context,
 	.restore_context = am43xx_restore_context,
 	.prepare_rtc_suspend = am43xx_prepare_rtc_suspend,
@@ -281,24 +314,85 @@ static struct am33xx_pm_ops am43xx_ops = {
 	.get_rtc_base_addr = am43xx_get_rtc_base_addr,
 };
 
-struct am33xx_pm_ops *amx3_get_pm_ops(void)
+struct am33xx_pm_platform_data *am33xx_pm_get_pdata(void)
 {
 	if (soc_is_am33xx())
-		return &am33xx_ops;
-	else if (soc_is_am43xx())
-		return &am43xx_ops;
+		return &am33xx_pdata;
+	else if (soc_is_am437x())
+		return &am43xx_pdata;
 	else
 		return NULL;
 }
-EXPORT_SYMBOL_GPL(amx3_get_pm_ops);
 
-struct am33xx_pm_sram_addr *amx3_get_sram_addrs(void)
+void __init amx3_common_pm_init(void)
 {
-	if (soc_is_am33xx())
-		return &am33xx_pm_sram;
-	else if (soc_is_am43xx())
-		return &am43xx_pm_sram;
-	else
-		return NULL;
+	struct platform_device_info devinfo = { };
+	struct am33xx_pm_platform_data *pdata;
+
+	pdata = am33xx_pm_get_pdata();
+	devinfo.name = "pm33xx";
+	devinfo.data = pdata;
+	devinfo.size_data = sizeof(*pdata);
+	platform_device_register_full(&devinfo);
 }
-EXPORT_SYMBOL_GPL(amx3_get_sram_addrs);
+
+static int __init amx3_idle_init(struct device_node *cpu_node, int cpu)
+{
+	struct device_node *state_node;
+	struct amx3_idle_state states[CPUIDLE_STATE_MAX];
+	int i;
+	int state_count = 1;
+
+	for (i = 0; ; i++) {
+		state_node = of_parse_phandle(cpu_node, "cpu-idle-states", i);
+		if (!state_node)
+			break;
+
+		if (!of_device_is_available(state_node))
+			continue;
+
+		if (i == CPUIDLE_STATE_MAX) {
+			pr_warn("%s: cpuidle states reached max possible\n",
+				__func__);
+			break;
+		}
+
+		states[state_count].wfi_flags = 0;
+
+		if (of_property_read_bool(state_node, "ti,idle-wkup-m3"))
+			states[state_count].wfi_flags |= WFI_FLAG_WAKE_M3 |
+							 WFI_FLAG_FLUSH_CACHE;
+
+		state_count++;
+	}
+
+	idle_states = kcalloc(state_count, sizeof(*idle_states), GFP_KERNEL);
+	if (!idle_states)
+		return -ENOMEM;
+
+	for (i = 1; i < state_count; i++)
+		idle_states[i].wfi_flags = states[i].wfi_flags;
+
+	return 0;
+}
+
+static int amx3_idle_enter(unsigned long index)
+{
+	struct amx3_idle_state *idle_state = &idle_states[index];
+
+	if (!idle_state)
+		return -EINVAL;
+
+	if (idle_fn)
+		idle_fn(idle_state->wfi_flags);
+
+	return 0;
+}
+
+static struct cpuidle_ops amx3_cpuidle_ops __initdata = {
+	.init = amx3_idle_init,
+	.suspend = amx3_idle_enter,
+};
+
+CPUIDLE_METHOD_OF_DECLARE(pm33xx_idle, "ti,am3352", &amx3_cpuidle_ops);
+CPUIDLE_METHOD_OF_DECLARE(pm43xx_idle, "ti,am4372", &amx3_cpuidle_ops);

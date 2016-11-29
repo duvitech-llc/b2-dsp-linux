@@ -81,8 +81,8 @@ struct mt9t11x_camera_info {
 };
 
 /************************************************************************
-			macro
-************************************************************************/
+ *			macro
+ ***********************************************************************/
 /*
  * frame size
  */
@@ -102,8 +102,8 @@ struct mt9t11x_camera_info {
 #define VAR8(id, offset) _VAR(id, offset, 0x8000)
 
 /************************************************************************
-			struct
-************************************************************************/
+ *			struct
+ ***********************************************************************/
 struct mt9t11x_format {
 	u32 code;
 	u32 colorspace;
@@ -178,8 +178,8 @@ struct mt9t11x_priv {
 };
 
 /************************************************************************
-			supported frame sizes
-************************************************************************/
+ *			supported frame sizes
+ ***********************************************************************/
 
 static const struct mt9t11x_framesize mt9t11x_framesizes[] = {
 	{
@@ -228,8 +228,8 @@ static const struct mt9t11x_framesize mt9t11x_framesizes[] = {
 };
 
 /************************************************************************
-			supported format
-************************************************************************/
+ *			supported format
+ ***********************************************************************/
 
 static const struct mt9t11x_format mt9t11x_cfmts[] = {
 	{
@@ -266,8 +266,8 @@ static const struct mt9t11x_format mt9t11x_cfmts[] = {
 };
 
 /************************************************************************
-			general function
-************************************************************************/
+ *			general function
+ ***********************************************************************/
 static inline struct mt9t11x_priv *sd_to_mt9t11x(struct v4l2_subdev *sd)
 {
 	return container_of(sd, struct mt9t11x_priv, subdev);
@@ -450,38 +450,38 @@ static int mt9t11x_clock_info(const struct i2c_client *client, u32 ext)
 	m = n & 0x00ff;
 	n = (n >> 8) & 0x003f;
 
-	enable = ((6000 > ext) || (54000 < ext)) ? "X" : "";
+	enable = ((ext < 6000) || (ext > 54000)) ? "X" : "";
 	dev_dbg(&client->dev, "EXTCLK          : %10u K %s\n", ext, enable);
 
 	vco = 2 * m * ext / (n + 1);
-	enable = ((384000 > vco) || (768000 < vco)) ? "X" : "";
+	enable = ((vco < 384000) || (vco > 768000)) ? "X" : "";
 	dev_dbg(&client->dev, "VCO             : %10u K %s\n", vco, enable);
 
 	clk = vco / (p1 + 1) / (p2 + 1);
-	enable = (96000 < clk) ? "X" : "";
+	enable = (clk > 96000) ? "X" : "";
 	dev_dbg(&client->dev, "PIXCLK          : %10u K %s\n", clk, enable);
 
 	clk = vco / (p3 + 1);
-	enable = (768000 < clk) ? "X" : "";
+	enable = (clk > 768000) ? "X" : "";
 	dev_dbg(&client->dev, "MIPICLK         : %10u K %s\n", clk, enable);
 
 	clk = vco / (p6 + 1);
-	enable = (96000 < clk) ? "X" : "";
+	enable = (clk > 96000) ? "X" : "";
 	dev_dbg(&client->dev, "MCU CLK         : %10u K %s\n", clk, enable);
 
 	clk = vco / (p5 + 1);
-	enable = (54000 < clk) ? "X" : "";
+	enable = (clk > 54000) ? "X" : "";
 	dev_dbg(&client->dev, "SOC CLK         : %10u K %s\n", clk, enable);
 
 	clk = vco / (p4 + 1);
-	enable = (70000 < clk) ? "X" : "";
+	enable = (clk > 70000) ? "X" : "";
 	dev_dbg(&client->dev, "Sensor CLK      : %10u K %s\n", clk, enable);
 
 	clk = vco / (p7 + 1);
 	dev_dbg(&client->dev, "External sensor : %10u K\n", clk);
 
 	clk = ext / (n + 1);
-	enable = ((2000 > clk) || (24000 < clk)) ? "X" : "";
+	enable = ((clk < 2000) || (clk > 24000)) ? "X" : "";
 	dev_dbg(&client->dev, "PFD             : %10u K %s\n", clk, enable);
 
 	return 0;
@@ -1541,8 +1541,8 @@ static int mt9t11x_init_camera(const struct i2c_client *client)
 }
 
 /************************************************************************
-			v4l2_subdev_core_ops
-************************************************************************/
+ *			v4l2_subdev_core_ops
+ ***********************************************************************/
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 static int mt9t11x_g_register(struct v4l2_subdev *sd,
@@ -1686,8 +1686,8 @@ static int mt9t11x_initialize_controls(struct mt9t11x_priv *priv)
 }
 
 /************************************************************************
-			v4l2_subdev_video_ops
-************************************************************************/
+ *			v4l2_subdev_video_ops
+ ***********************************************************************/
 static int mt9t11x_set_params(struct mt9t11x_priv *priv,
 			      const struct v4l2_rect *rect,
 			      u32 code)
@@ -2025,8 +2025,8 @@ static const struct v4l2_subdev_pad_ops mt9t11x_subdev_pad_ops = {
 };
 
 /************************************************************************
-			i2c driver
-************************************************************************/
+ *			i2c driver
+ ***********************************************************************/
 static struct v4l2_subdev_ops mt9t11x_subdev_ops = {
 	.core	= &mt9t11x_subdev_core_ops,
 	.video	= &mt9t11x_subdev_video_ops,
@@ -2178,53 +2178,43 @@ static int mt9t11x_probe(struct i2c_client *client,
 	mutex_init(&priv->lock);
 	priv->client = client;
 
-	gpio = devm_gpiod_get(&client->dev, "reset");
+	gpio = devm_gpiod_get(&client->dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(gpio)) {
 		if (PTR_ERR(gpio) != -ENOENT)
 			return PTR_ERR(gpio);
 		gpio = NULL;
-	} else {
-		gpiod_direction_output(gpio, 0);
 	}
 	priv->reset_gpio = gpio;
 
-	gpio = devm_gpiod_get(&client->dev, "powerdown");
+	gpio = devm_gpiod_get(&client->dev, "powerdown", GPIOD_OUT_LOW);
 	if (IS_ERR(gpio)) {
 		if (PTR_ERR(gpio) != -ENOENT)
 			return PTR_ERR(gpio);
 		gpio = NULL;
-	} else {
-		gpiod_direction_output(gpio, 0);
 	}
 	priv->powerdown_gpio = gpio;
 
-	gpio = devm_gpiod_get(&client->dev, "oscen");
+	gpio = devm_gpiod_get(&client->dev, "oscen", GPIOD_OUT_LOW);
 	if (IS_ERR(gpio)) {
 		if (PTR_ERR(gpio) != -ENOENT)
 			return PTR_ERR(gpio);
 		gpio = NULL;
-	} else {
-		gpiod_direction_output(gpio, 0);
 	}
 	priv->oscen_gpio = gpio;
 
-	gpio = devm_gpiod_get(&client->dev, "bufen");
+	gpio = devm_gpiod_get(&client->dev, "bufen", GPIOD_OUT_LOW);
 	if (IS_ERR(gpio)) {
 		if (PTR_ERR(gpio) != -ENOENT)
 			return PTR_ERR(gpio);
 		gpio = NULL;
-	} else {
-		gpiod_direction_output(gpio, 0);
 	}
 	priv->bufen_gpio = gpio;
 
-	gpio = devm_gpiod_get(&client->dev, "camen");
+	gpio = devm_gpiod_get(&client->dev, "camen", GPIOD_OUT_LOW);
 	if (IS_ERR(gpio)) {
 		if (PTR_ERR(gpio) != -ENOENT)
 			return PTR_ERR(gpio);
 		gpio = NULL;
-	} else {
-		gpiod_direction_output(gpio, 0);
 	}
 	priv->camen_gpio = gpio;
 

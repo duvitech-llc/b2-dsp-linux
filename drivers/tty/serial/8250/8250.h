@@ -42,8 +42,6 @@ struct uart_8250_dma {
 	size_t			rx_size;
 	size_t			tx_size;
 
-	unsigned int		rx_pos;
-
 	unsigned char		tx_running;
 	unsigned char		tx_err;
 	unsigned char		rx_running;
@@ -213,3 +211,14 @@ static inline int ns16550a_goto_highspeed(struct uart_8250_port *up)
 	}
 	return 1;
 }
+
+static inline int serial_index(struct uart_port *port)
+{
+	return port->minor - 64;
+}
+
+#if 0
+#define DEBUG_INTR(fmt...)	printk(fmt)
+#else
+#define DEBUG_INTR(fmt...)	do { } while (0)
+#endif

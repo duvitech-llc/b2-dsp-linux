@@ -25,6 +25,13 @@
 		display0 = &lcd0;
 	};
 
+	/* fixed 32k external oscillator clock */
+	clk_32k_rtc: clk_32k_rtc {
+		#clock-cells = <0>;
+		compatible = "fixed-clock";
+		clock-frequency = <32768>;
+	};
+
 	backlight {
 		compatible = "pwm-backlight";
 		pwms = <&ecap0 0 50000 PWM_POLARITY_INVERTED>;
@@ -36,10 +43,13 @@
 		compatible = "simple-audio-card";
 		simple-audio-card,name = "AM437x-SK-EVM";
 		simple-audio-card,widgets =
-			"Headphone", "Headphone Jack";
+			"Headphone", "Headphone Jack",
+			"Line", "Line In";
 		simple-audio-card,routing =
 			"Headphone Jack",	"HPLOUT",
-			"Headphone Jack",	"HPROUT";
+			"Headphone Jack",	"HPROUT",
+			"LINE1L",		"Line In",
+			"LINE1R",		"Line In";
 		simple-audio-card,format = "dsp_b";
 		simple-audio-card,bitclock-master = <&sound_master>;
 		simple-audio-card,frame-master = <&sound_master>;
@@ -392,6 +402,15 @@
 		>;
 	};
 
+	mcasp1_pins_sleep: mcasp1_pins_sleep {
+		pinctrl-single,pins = <
+			0x10c (PIN_INPUT_PULLDOWN | MUX_MODE7)
+			0x110 (PIN_INPUT_PULLDOWN | MUX_MODE7)
+			0x108 (PIN_INPUT_PULLDOWN | MUX_MODE7)
+			0x144 (PIN_INPUT_PULLDOWN | MUX_MODE7)
+		>;
+	};
+
 	lcd_pins: lcd_pins {
 		pinctrl-single,pins = <
 			0x1c (PIN_OUTPUT_PULLDOWN | MUX_MODE7) /* gpcm_ad7.gpio1_7 */
@@ -604,7 +623,7 @@
 
 		reg = <0x38>;
 		interrupt-parent = <&gpio0>;
-		interrupts = <31 0>;
+		interrupts = <31 IRQ_TYPE_EDGE_FALLING>;
 
 		reset-gpios = <&gpio1 28 GPIO_ACTIVE_LOW>;
 
@@ -669,7 +688,7 @@
 
 	vmmc-supply = <&dcdc4>;
 	bus-width = <4>;
-	cd-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+	cd-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
 };
 
 &uart1 {
@@ -682,9 +701,10 @@
 &mmc3 {
 	status = "okay";
 	/* these are on the crossbar and are outlined in the
-	   xbar-event-map element */
-	dmas = <&edma 30
-		&edma 31>;
+	 * xbar-event-map element
+	 */
+	dmas = <&edma_xbar 30 0 1>,
+		<&edma_xbar 31 0 2>;
 	dma-names = "tx", "rx";
 	vmmc-supply = <&vmmcwl_fixed>;
 	bus-width = <4>;
@@ -820,8 +840,9 @@
 
 &mcasp1 {
 	#sound-dai-cells = <0>;
-	pinctrl-names = "default";
+	pinctrl-names = "default", "sleep";
 	pinctrl-0 = <&mcasp1_pins>;
+	pinctrl-1 = <&mcasp1_pins_sleep>;
 
 	status = "okay";
 
@@ -850,8 +871,10 @@
 };
 
 &rtc {
+	clocks = <&clk_32k_rtc>, <&clk_32768_ck>;
+	clock-names = "ext-clk", "int-clk";
+	system-power-controller;
 	status = "okay";
-	ext-clk-src;
 };
 
 &wdt {

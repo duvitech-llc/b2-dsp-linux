@@ -11,27 +11,29 @@ Required properties:
 - reg: physical base address and size of the registers map.
 
 Optional properties:
-- ti,hwmods: Name of the hwmod associated to the EHRPWM:
-  "ehrpwm<x>", <x> being the 0-based instance number from the HW spec
+- clocks: Reference to the ehrpwm's tb clock
+- clock-names : must contain "tbclk"
 
 Example:
 
-ehrpwm0: ehrpwm@0 { /* EHRPWM on am33xx */
+ehrpwm0: pwm@48300200 { /* EHRPWM on am33xx */
 	compatible = "ti,am33xx-ehrpwm";
 	#pwm-cells = <3>;
 	reg = <0x48300200 0x100>;
-	ti,hwmods = "ehrpwm0";
+	clocks = <&ehrpwm0_tbclk>;
+	clock-names = "tbclk";
 };
 
-ehrpwm0: ehrpwm@0 { /* EHRPWM on da850 */
+ehrpwm0: pwm@01f00000 { /* EHRPWM on da850 */
 	compatible = "ti,da850-ehrpwm", "ti,am33xx-ehrpwm";
 	#pwm-cells = <3>;
 	reg = <0x300000 0x2000>;
 };
 
-ehrpwm0: ehrpwm@0 { /* EHRPWM on dra7xx */
+ehrpwm0: pwm@4843e200 { /* EHRPWM on dra7xx */
 	compatible = "ti,dra7xx-ehrpwm", "ti,am33xx-ehrpwm";
 	#pwm-cells = <3>;
 	reg = <0x48440200 0x80>;
-	ti,hwmods = "ehrpwm0";
+	clocks = <&ehrpwm0_tbclk>;
+	clock-names = "tbclk";
 };

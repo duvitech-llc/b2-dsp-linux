@@ -5,7 +5,7 @@
  * The system works in a message response protocol
  * See: https://...blablablah.com/asdasdasa.pdf for details
  *
- * Copyright (C)  2015 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C)  2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -46,6 +46,7 @@
 #define TI_SCI_MSG_VERSION	0x0002
 #define TI_SCI_MSG_WAKE_REASON	0x0003
 #define TI_SCI_MSG_GOODBYE	0x0004
+#define TI_SCI_MSG_SYS_RESET	0x0005
 
 /* Device requests */
 #define TI_SCI_MSG_SET_DEVICE_STATE	0x0200
@@ -73,13 +74,13 @@ struct ti_sci_msg_hdr {
 	u16 type;
 	u8 host;
 	u8 seq;
-#define TISCI_MSG_FLAG(val)			(1 << (val))
+#define TI_SCI_MSG_FLAG(val)			(1 << (val))
 #define TI_SCI_FLAG_REQ_GENERIC_NORESPONSE	0x0
-#define TI_SCI_FLAG_REQ_ACK_ON_RECEIVED		TISCI_MSG_FLAG(0)
-#define TI_SCI_FLAG_REQ_ACK_ON_PROCESSED	TISCI_MSG_FLAG(1)
+#define TI_SCI_FLAG_REQ_ACK_ON_RECEIVED		TI_SCI_MSG_FLAG(0)
+#define TI_SCI_FLAG_REQ_ACK_ON_PROCESSED	TI_SCI_MSG_FLAG(1)
 #define TI_SCI_FLAG_RESP_GENERIC_NACK		0x0
-#define TI_SCI_FLAG_RESP_GENERIC_ACK		TISCI_MSG_FLAG(1)
-	/* Additional flags */
+#define TI_SCI_FLAG_RESP_GENERIC_ACK		TI_SCI_MSG_FLAG(1)
+	/* Additional Flags */
 	u32 flags;
 } __packed;
 
@@ -106,6 +107,17 @@ struct ti_sci_msg_resp_version {
 } __packed;
 
 /**
+ * struct ti_sci_msg_req_reboot - Reboot the SoC
+ * @hdr:	Generic Header
+ *
+ * Request type is TI_SCI_MSG_SYS_RESET, responded with a generic
+ * ACK/NACK message.
+ */
+struct ti_sci_msg_req_reboot {
+	struct ti_sci_msg_hdr hdr;
+} __packed;
+
+/**
  * struct ti_sci_msg_req_set_device_state - Set the desired state of the device
  * @hdr:		Generic header
  * @id:	Indicates which device to modify
@@ -129,9 +141,9 @@ struct ti_sci_msg_resp_version {
  */
 struct ti_sci_msg_req_set_device_state {
 	/* Additional hdr->flags options */
-#define MSG_FLAG_DEVICE_WAKE_ENABLED	TISCI_MSG_FLAG(8)
-#define MSG_FLAG_DEVICE_RESET_ISO	TISCI_MSG_FLAG(9)
-#define MSG_FLAG_DEVICE_EXCLUSIVE	TISCI_MSG_FLAG(10)
+#define MSG_FLAG_DEVICE_WAKE_ENABLED	TI_SCI_MSG_FLAG(8)
+#define MSG_FLAG_DEVICE_RESET_ISO	TI_SCI_MSG_FLAG(9)
+#define MSG_FLAG_DEVICE_EXCLUSIVE	TI_SCI_MSG_FLAG(10)
 	struct ti_sci_msg_hdr hdr;
 	u32 id;
 	u32 reserved;
@@ -233,9 +245,9 @@ struct ti_sci_msg_req_set_device_resets {
  */
 struct ti_sci_msg_req_set_clock_state {
 	/* Additional hdr->flags options */
-#define MSG_FLAG_CLOCK_ALLOW_SSC		TISCI_MSG_FLAG(8)
-#define MSG_FLAG_CLOCK_ALLOW_FREQ_CHANGE	TISCI_MSG_FLAG(9)
-#define MSG_FLAG_CLOCK_INPUT_TERM		TISCI_MSG_FLAG(10)
+#define MSG_FLAG_CLOCK_ALLOW_SSC		TI_SCI_MSG_FLAG(8)
+#define MSG_FLAG_CLOCK_ALLOW_FREQ_CHANGE	TI_SCI_MSG_FLAG(9)
+#define MSG_FLAG_CLOCK_INPUT_TERM		TI_SCI_MSG_FLAG(10)
 	struct ti_sci_msg_hdr hdr;
 	u32 dev_id;
 	u8 clk_id;

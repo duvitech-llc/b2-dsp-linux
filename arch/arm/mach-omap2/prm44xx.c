@@ -253,14 +253,15 @@ static void omap44xx_prm_ocp_barrier(void)
 static void omap44xx_prm_save_and_clear_irqen(u32 *saved_mask)
 {
 	int i;
+	u16 reg;
 
 	for (i = 0; i < omap4_prcm_irq_setup.nr_regs; i++) {
+		reg = omap4_prcm_irq_setup.mask + i * 4;
+
 		saved_mask[i] =
 			omap4_prm_read_inst_reg(OMAP4430_PRM_OCP_SOCKET_INST,
-						omap4_prcm_irq_setup.mask +
-						i * 4);
-		omap4_prm_write_inst_reg(0, OMAP4430_PRM_OCP_SOCKET_INST,
-					 omap4_prcm_irq_setup.mask + i * 4);
+						reg);
+		omap4_prm_write_inst_reg(0, OMAP4430_PRM_OCP_SOCKET_INST, reg);
 	}
 
 	/* OCP barrier */

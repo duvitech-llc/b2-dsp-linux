@@ -56,12 +56,6 @@
 
 #define SATA_PLL_SOFT_RESET	BIT(18)
 
-#define PHY_RX_ANA_PRGRAMMABILITY_REG	0xC
-#define MEM_EN_PLLBYP			BIT(7)
-
-#define PHY_TX_TEST_CONFIG	0x2C
-#define MEM_ENTESTCLK		BIT(31)
-
 #define PIPE3_PHY_PWRCTL_CLK_CMD_MASK	0x003FC000
 #define PIPE3_PHY_PWRCTL_CLK_CMD_SHIFT	14
 
@@ -73,10 +67,6 @@
 
 #define PCIE_PCS_MASK			0xFF0000
 #define PCIE_PCS_DELAY_COUNT_SHIFT	0x10
-
-#define PIPE3_PHY_DISABLE_SYNC_POWER	BIT(4)
-
-#define CONFIGURE_AS_PCIE		BIT(0)
 
 /*
  * This is an Empirical value that works, need to confirm the actual
@@ -100,10 +90,7 @@ struct pipe3_dpll_map {
 };
 
 struct ti_pipe3 {
-	u32			flags;
 	void __iomem		*pll_ctrl_base;
-	void __iomem		*phy_rx;
-	void __iomem		*phy_tx;
 	struct device		*dev;
 	struct device		*control_dev;
 	struct clk		*wkupclk;
@@ -177,19 +164,16 @@ static int ti_pipe3_power_off(struct phy *x)
 	int ret;
 	struct ti_pipe3 *phy = phy_get_drvdata(x);
 
-	if (phy->phy_power_syscon) {
-		val = PIPE3_PHY_TX_RX_POWEROFF <<
-			PIPE3_PHY_PWRCTL_CLK_CMD_SHIFT;
-
-		ret = regmap_update_bits(phy->phy_power_syscon, phy->power_reg,
-					 PIPE3_PHY_PWRCTL_CLK_CMD_MASK, val);
-		if (ret < 0)
-			return ret;
-	} else {
+	if (!phy->phy_power_syscon) {
 		omap_control_phy_power(phy->control_dev, 0);
+		return 0;
 	}
 
-	return 0;
+	val = PIPE3_PHY_TX_RX_POWEROFF << PIPE3_PHY_PWRCTL_CLK_CMD_SHIFT;
+
+	ret = regmap_update_bits(phy->phy_power_syscon, phy->power_reg,
+				 PIPE3_PHY_PWRCTL_CLK_CMD_MASK, val);
+	return ret;
 }
 
 static int ti_pipe3_power_on(struct phy *x)
@@ -200,37 +184,25 @@ static int ti_pipe3_power_on(struct phy *x)
 	unsigned long rate;
 	struct ti_pipe3 *phy = phy_get_drvdata(x);
 
-	if (phy->phy_power_syscon) {
-		rate = clk_get_rate(phy->sys_clk);
-		if (!rate) {
-			dev_err(phy->dev, "Invalid clock rate\n");
-			return -EINVAL;
-		}
-		rate = rate / 1000000;
-		mask = OMAP_CTRL_PIPE3_PHY_PWRCTL_CLK_CMD_MASK |
-			  OMAP_CTRL_PIPE3_PHY_PWRCTL_CLK_FREQ_MASK;
-		val = PIPE3_PHY_TX_RX_POWERON;
-		if (phy->flags & CONFIGURE_AS_PCIE)
-			val |= PIPE3_PHY_DISABLE_SYNC_POWER;
-		val <<= PIPE3_PHY_PWRCTL_CLK_CMD_SHIFT;
-		val |= rate << OMAP_CTRL_PIPE3_PHY_PWRCTL_CLK_FREQ_SHIFT;
-
-		ret = regmap_update_bits(phy->phy_power_syscon, phy->power_reg,
-					 mask, val);
-		if (ret < 0)
-			return ret;
-
-		if (phy->flags & CONFIGURE_AS_PCIE) {
-			ret = regmap_update_bits(phy->phy_power_syscon,
-						 phy->power_reg, mask, val);
-			if (ret < 0)
-				return ret;
-		}
-	} else {
+	if (!phy->phy_power_syscon) {
 		omap_control_phy_power(phy->control_dev, 1);
+		return 0;
 	}
 
-	return 0;
+	rate = clk_get_rate(phy->sys_clk);
+	if (!rate) {
+		dev_err(phy->dev, "Invalid clock rate\n");
+		return -EINVAL;
+	}
+	rate = rate / 1000000;
+	mask = OMAP_CTRL_PIPE3_PHY_PWRCTL_CLK_CMD_MASK |
+		  OMAP_CTRL_PIPE3_PHY_PWRCTL_CLK_FREQ_MASK;
+	val = PIPE3_PHY_TX_RX_POWERON << PIPE3_PHY_PWRCTL_CLK_CMD_SHIFT;
+	val |= rate << OMAP_CTRL_PIPE3_PHY_PWRCTL_CLK_FREQ_SHIFT;
+
+	ret = regmap_update_bits(phy->phy_power_syscon, phy->power_reg,
+				 mask, val);
+	return ret;
 }
 
 static int ti_pipe3_dpll_wait_lock(struct ti_pipe3 *phy)
@@ -296,36 +268,21 @@ static int ti_pipe3_init(struct phy *x)
 	int ret = 0;
 
 	ti_pipe3_enable_clocks(phy);
-
-	if (phy->flags & CONFIGURE_AS_PCIE) {
-		val = ti_pipe3_readl(phy->phy_rx,
-				     PHY_RX_ANA_PRGRAMMABILITY_REG);
-		val |= MEM_EN_PLLBYP;
-		ti_pipe3_writel(phy->phy_rx, PHY_RX_ANA_PRGRAMMABILITY_REG,
-				val);
-		val = ti_pipe3_readl(phy->phy_tx, PHY_TX_TEST_CONFIG);
-		val |= MEM_ENTESTCLK;
-		ti_pipe3_writel(phy->phy_tx, PHY_TX_TEST_CONFIG, val);
-		return 0;
-	}
-
 	/*
 	 * Set pcie_pcs register to 0x96 for proper functioning of phy
 	 * as recommended in AM572x TRM SPRUHZ6, section 18.5.2.2, table
 	 * 18-1804.
 	 */
 	if (of_device_is_compatible(phy->dev->of_node, "ti,phy-pipe3-pcie")) {
-		if (phy->pcs_syscon) {
-			val = 0x96 << OMAP_CTRL_PCIE_PCS_DELAY_COUNT_SHIFT;
-			ret = regmap_update_bits(phy->pcs_syscon,
-						 phy->pcie_pcs_reg,
-						 PCIE_PCS_MASK, val);
-			if (ret < 0)
-				return ret;
-		} else {
+		if (!phy->pcs_syscon) {
 			omap_control_pcie_pcs(phy->control_dev, 0x96);
+			return 0;
 		}
-		return 0;
+
+		val = 0x96 << OMAP_CTRL_PCIE_PCS_DELAY_COUNT_SHIFT;
+		ret = regmap_update_bits(phy->pcs_syscon, phy->pcie_pcs_reg,
+					 PCIE_PCS_MASK, val);
+		return ret;
 	}
 
 	/* Bring it out of IDLE if it is IDLE */
@@ -336,11 +293,18 @@ static int ti_pipe3_init(struct phy *x)
 		ret = ti_pipe3_dpll_wait_lock(phy);
 	}
 
-	/* Program the DPLL only if not locked */
+	/* SATA has issues if re-programmed when locked */
 	val = ti_pipe3_readl(phy->pll_ctrl_base, PLL_STATUS);
-	if (!(val & PLL_LOCK))
-		if (ti_pipe3_dpll_program(phy))
-			return -EINVAL;
+	if ((val & PLL_LOCK) && of_device_is_compatible(phy->dev->of_node,
+							"ti,phy-pipe3-sata"))
+		return ret;
+
+	/* Program the DPLL */
+	ret = ti_pipe3_dpll_program(phy);
+	if (ret) {
+		ti_pipe3_disable_clocks(phy);
+		return -EINVAL;
+	}
 
 	return ret;
 }
@@ -359,8 +323,7 @@ static int ti_pipe3_exit(struct phy *x)
 		return 0;
 
 	/* PCIe doesn't have internal DPLL */
-	if (!of_device_is_compatible(phy->dev->of_node, "ti,phy-pipe3-pcie") &&
-			!(phy->flags & CONFIGURE_AS_PCIE)) {
+	if (!of_device_is_compatible(phy->dev->of_node, "ti,phy-pipe3-pcie")) {
 		/* Put DPLL in IDLE mode */
 		val = ti_pipe3_readl(phy->pll_ctrl_base, PLL_CONFIGURATION2);
 		val |= PLL_IDLE;
@@ -394,7 +357,7 @@ static int ti_pipe3_exit(struct phy *x)
 
 	return 0;
 }
-static struct phy_ops ops = {
+static const struct phy_ops ops = {
 	.init		= ti_pipe3_init,
 	.exit		= ti_pipe3_exit,
 	.power_on	= ti_pipe3_power_on,
@@ -580,27 +543,6 @@ static int ti_pipe3_get_pll_base(struct ti_pipe3 *phy)
 	return 0;
 }
 
-static int ti_pipe3_get_rx_tx_base(struct ti_pipe3 *phy)
-{
-	struct resource *res;
-	struct device *dev = phy->dev;
-	struct platform_device *pdev = to_platform_device(dev);
-
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-					   "phy_rx");
-	phy->phy_rx = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(phy->phy_rx))
-		return PTR_ERR(phy->phy_rx);
-
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-					   "phy_tx");
-	phy->phy_tx = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(phy->phy_tx))
-		return PTR_ERR(phy->phy_tx);
-
-	return 0;
-}
-
 static int ti_pipe3_probe(struct platform_device *pdev)
 {
 	struct ti_pipe3 *phy;
@@ -620,10 +562,6 @@ static int ti_pipe3_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = ti_pipe3_get_rx_tx_base(phy);
-	if (ret)
-		return ret;
-
 	ret = ti_pipe3_get_sysctrl(phy);
 	if (ret)
 		return ret;
@@ -631,9 +569,6 @@ static int ti_pipe3_probe(struct platform_device *pdev)
 	ret = ti_pipe3_get_clk(phy);
 	if (ret)
 		return ret;
-
-	if (of_property_read_bool(node, "ti,configure-as-pcie"))
-		phy->flags |= CONFIGURE_AS_PCIE;
 
 	platform_set_drvdata(pdev, phy);
 	pm_runtime_enable(dev);

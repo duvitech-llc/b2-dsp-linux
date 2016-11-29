@@ -8,11 +8,11 @@ BT.656/1120 capable encoder chip.
 
 Required properties:
 - compatible: must be "ti,vip1", "ti,vip2" or "ti,vip3".
-- reg:	physical base address and length of the registers set for the 4
-	memory regions required;
-- reg-names: name associated with the memory regions described is <reg>;
+- reg:	VIP top level, parser, colorspace converter, scaler for slice 0 and 1
+	and vpdma memory address space;
+- reg-names: vip, parser0, csc0, sc0, parser1, csc1, sc1 and vpdma registers;
 - interrupts: should contain IRQ line for VIP;
-- syscon: phandle to the device control module;
+- syscon-pol: phandle to the device control module;
 
 VIP supports 2 slices. Each slice can handle up to 2 camera port nodes.
 Each port nodes should contain a 'port' child node with child 'endpoint'
@@ -22,13 +22,27 @@ Documentation/devicetree/bindings/media/video-interfaces.txt.
 Example:
 	vip1: vip@0x48970000 {
 		compatible = "ti,vip1";
-		reg = <0x48970000 0x10000>,
-		      <0x4897d000 0x1000>;
-		reg-names = "vip","vpdma";
+		reg = <0x48970000 0x114>,
+		      <0x48975500 0xD8>,
+		      <0x48975700 0x18>,
+		      <0x48975800 0x80>,
+		      <0x48975a00 0xD8>,
+		      <0x48975c00 0x18>,
+		      <0x48975d00 0x80>,
+		      <0x4897d000 0x400>;
+		reg-names = "vip",
+			    "parser0",
+			    "csc0",
+			    "sc0",
+			    "parser1",
+			    "csc1",
+			    "sc1",
+			    "vpdma";
 		ti,hwmods = "vip1";
 		interrupts = <GIC_SPI 351 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 392 IRQ_TYPE_LEVEL_HIGH>;
-		syscon = <&dra7_ctrl_core>;
+		/* CTRL_CORE_SMA_SW_1 */
+		syscon-pol = <&scm_conf 0x534>;
 		#address-cells = <1>;
 		#size-cells = <0>;
 		status = "disabled";
@@ -36,6 +50,7 @@ Example:
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <0>;
+			status = "disabled";
 			endpoint@0 {
 				slave-mode;
 				remote-endpoint = <&camera1>;
@@ -45,7 +60,19 @@ Example:
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <1>;
-			};
+			status = "disabled";
+		};
+		vin1b: port@2 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <2>;
+			status = "disabled";
+		};
+		vin2b: port@3 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <3>;
+			status = "disabled";
 		};
 	};
 

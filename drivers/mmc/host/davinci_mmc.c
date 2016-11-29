@@ -32,12 +32,10 @@
 #include <linux/delay.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
-#include <linux/edma.h>
 #include <linux/mmc/mmc.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 
-#include <linux/platform_data/edma.h>
 #include <linux/platform_data/mmc-davinci.h>
 
 /*
@@ -517,35 +515,20 @@ davinci_release_dma_channels(struct mmc_davinci_host *host)
 
 static int __init davinci_acquire_dma_channels(struct mmc_davinci_host *host)
 {
-	int r;
-	dma_cap_mask_t mask;
-
-	dma_cap_zero(mask);
-	dma_cap_set(DMA_SLAVE, mask);
-
-	host->dma_tx = dma_request_slave_channel_compat_reason(mask,
-				edma_filter_fn, &host->txdma,
-				mmc_dev(host->mmc), "tx");
+	host->dma_tx = dma_request_chan(mmc_dev(host->mmc), "tx");
 	if (IS_ERR(host->dma_tx)) {
 		dev_err(mmc_dev(host->mmc), "Can't get dma_tx channel\n");
 		return PTR_ERR(host->dma_tx);
 	}
 
-	host->dma_rx = dma_request_slave_channel_compat_reason(mask,
-				edma_filter_fn, &host->rxdma,
-				mmc_dev(host->mmc), "rx");
+	host->dma_rx = dma_request_chan(mmc_dev(host->mmc), "rx");
 	if (IS_ERR(host->dma_rx)) {
 		dev_err(mmc_dev(host->mmc), "Can't get dma_rx channel\n");
-		r = PTR_ERR(host->dma_rx);
-		goto free_master_write;
+		dma_release_channel(host->dma_tx);
+		return PTR_ERR(host->dma_rx);
 	}
 
 	return 0;
-
-free_master_write:
-	dma_release_channel(host->dma_tx);
-
-	return r;
 }
 
 /*----------------------------------------------------------------------*/
@@ -1161,7 +1144,7 @@ static void __init init_mmcsd_host(struct mmc_davinci_host *host)
 	mmc_davinci_reset_ctrl(host, 0);
 }
 
-static struct platform_device_id davinci_mmc_devtype[] = {
+static const struct platform_device_id davinci_mmc_devtype[] = {
 	{
 		.name	= "dm6441-mmc",
 		.driver_data = MMC_CTLR_VERSION_1,
@@ -1261,18 +1244,6 @@ static int __init davinci_mmcsd_probe(struct platform_device *pdev)
 
 	host = mmc_priv(mmc);
 	host->mmc = mmc;	/* Important */
-
-	r = platform_get_resource(pdev, IORESOURCE_DMA, 0);
-	if (!r)
-		dev_warn(&pdev->dev, "RX DMA resource not specified\n");
-	else
-		host->rxdma = r->start;
-
-	r = platform_get_resource(pdev, IORESOURCE_DMA, 1);
-	if (!r)
-		dev_warn(&pdev->dev, "TX DMA resource not specified\n");
-	else
-		host->txdma = r->start;
 
 	host->mem_res = mem;
 	host->base = ioremap(mem->start, mem_size);

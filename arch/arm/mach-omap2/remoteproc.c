@@ -1,7 +1,8 @@
 /*
  * Remote processor machine-specific module for OMAP4+ SoCs
  *
- * Copyright (C) 2011-2015 Texas Instruments, Inc.
+ * Copyright (C) 2011-2016 Texas Instruments Incorporated - http://www.ti.com/
+ *      Suman Anna <s-anna@ti.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License

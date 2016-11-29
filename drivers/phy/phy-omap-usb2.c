@@ -104,21 +104,19 @@ static int omap_usb_phy_power(struct omap_usb *phy, int on)
 	u32 val;
 	int ret;
 
-	if (phy->syscon_phy_power) {
-		if (on)
-			val = phy->power_on;
-		else
-			val = phy->power_off;
-
-		ret = regmap_update_bits(phy->syscon_phy_power, phy->power_reg,
-					 phy->mask, val);
-		if (ret < 0)
-			return ret;
-	} else {
+	if (!phy->syscon_phy_power) {
 		omap_control_phy_power(phy->control_dev, on);
+		return 0;
 	}
 
-	return 0;
+	if (on)
+		val = phy->power_on;
+	else
+		val = phy->power_off;
+
+	ret = regmap_update_bits(phy->syscon_phy_power, phy->power_reg,
+				 phy->mask, val);
+	return ret;
 }
 
 static int omap_usb_power_off(struct phy *x)
@@ -141,20 +139,12 @@ static int omap_usb2_disable_clocks(struct omap_usb *phy)
 	if (!IS_ERR(phy->optclk))
 		clk_disable(phy->optclk);
 
-	WARN_ON_ONCE(pm_runtime_put_sync(phy->dev));
-
 	return 0;
 }
 
 static int omap_usb2_enable_clocks(struct omap_usb *phy)
 {
 	int ret;
-
-	ret = pm_runtime_get_sync(phy->dev);
-	if (ret < 0) {
-		pm_runtime_put_sync(phy->dev);
-		return ret;
-	}
 
 	ret = clk_enable(phy->wkupclk);
 	if (ret < 0) {
@@ -210,7 +200,7 @@ static int omap_usb_exit(struct phy *x)
 	return omap_usb2_disable_clocks(phy);
 }
 
-static struct phy_ops ops = {
+static const struct phy_ops ops = {
 	.init		= omap_usb_init,
 	.exit		= omap_usb_exit,
 	.power_on	= omap_usb_power_on,
@@ -269,7 +259,7 @@ static const struct of_device_id omap_usb2_id_table[] = {
 		.data = &dra7x_usb2_data,
 	},
 	{
-		.compatible = "ti,dra746-usb2-phy2",
+		.compatible = "ti,dra7x-usb2-phy2",
 		.data = &dra7x_usb2_phy2_data,
 	},
 	{

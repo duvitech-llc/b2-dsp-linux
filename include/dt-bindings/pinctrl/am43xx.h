@@ -36,7 +36,7 @@
  * Macro to allow using the absolute physical address instead of the
  * padconf registers instead of the offset from padconf base.
  */
-#define AM4372_IOPAD(pa, val)  (((pa) & 0xffff) - 0x0800) (val)
+#define AM4372_IOPAD(pa, val)	(((pa) & 0xffff) - 0x0800) (val)
 
 #endif
 

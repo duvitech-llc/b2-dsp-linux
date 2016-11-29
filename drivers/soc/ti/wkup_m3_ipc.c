@@ -21,7 +21,6 @@
 #include <linux/kthread.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/mailbox_client.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/omap-mailbox.h>
@@ -71,34 +70,7 @@
 #define WKUP_M3_AUXDATA_OFFSET		0x1000
 #define WKUP_M3_AUXDATA_SIZE		0xFF
 
-struct wkup_m3_ipc {
-	struct rproc *rproc;
-
-	void __iomem *ipc_mem_base;
-	struct device *dev;
-
-	int mem_type;
-	unsigned long resume_addr;
-	int vtt_conf;
-	int isolation_conf;
-	int state;
-
-	unsigned long volt_scale_offsets;
-	const char *sd_fw_name;
-
-	struct completion sync_complete;
-	struct mbox_client mbox_client;
-	struct mbox_chan *mbox;
-	bool is_rtc_only;
-};
-
-struct wkup_m3_scale_data_header {
-	u16 magic;
-	u8 sleep_offset;
-	u8 wake_offset;
-} __packed;
-
-static struct wkup_m3_ipc m3_ipc_state;
+static struct wkup_m3_ipc *m3_ipc_state;
 
 static const struct wkup_m3_wakeup_src wakeups[] = {
 	{.irq_nr = 16,	.src = "PRCM"},
@@ -119,20 +91,21 @@ static const struct wkup_m3_wakeup_src wakeups[] = {
 };
 
 /**
- * wkup_m3_copy_aux_data - Copy auxillary data to special region of m3 dmem
+ * wkup_m3_copy_aux_data - Copy auxiliary data to special region of m3 dmem
  * @data - pointer to data
  * @sz - size of data to copy (limit 256 bytes)
  *
  * Copies any additional blob of data to the wkup_m3 dmem to be used by the
  * firmware
  */
-static unsigned long wkup_m3_copy_aux_data(const void *data, int sz)
+static unsigned long wkup_m3_copy_aux_data(struct wkup_m3_ipc *m3_ipc,
+					   const void *data, int sz)
 {
 	unsigned long aux_data_dev_addr;
 	void *aux_data_addr;
 
 	aux_data_dev_addr = WKUP_M3_DMEM_START + WKUP_M3_AUXDATA_OFFSET;
-	aux_data_addr = rproc_da_to_va(m3_ipc_state.rproc,
+	aux_data_addr = rproc_da_to_va(m3_ipc->rproc,
 				       aux_data_dev_addr,
 				       WKUP_M3_AUXDATA_SIZE, 0);
 	memcpy(aux_data_addr, data, sz);
@@ -144,6 +117,7 @@ static void wkup_m3_scale_data_fw_cb(const struct firmware *fw, void *context)
 {
 	unsigned long val, aux_base;
 	struct wkup_m3_scale_data_header hdr;
+	struct wkup_m3_ipc *m3_ipc = context;
 	struct device *dev = (struct device *)context;
 
 	if (!fw) {
@@ -158,19 +132,20 @@ static void wkup_m3_scale_data_fw_cb(const struct firmware *fw, void *context)
 		goto release_sd_fw;
 	}
 
-	aux_base = wkup_m3_copy_aux_data(fw->data + sizeof(hdr),
+	aux_base = wkup_m3_copy_aux_data(m3_ipc, fw->data + sizeof(hdr),
 					 fw->size - sizeof(hdr));
 
 	val = (aux_base + hdr.sleep_offset);
 	val |= ((aux_base + hdr.wake_offset) << 16);
 
-	m3_ipc_state.volt_scale_offsets = val;
+	m3_ipc->volt_scale_offsets = val;
 
 release_sd_fw:
 	release_firmware(fw);
 };
 
-static int wkup_m3_init_scale_data(struct device *dev)
+static int wkup_m3_init_scale_data(struct wkup_m3_ipc *m3_ipc,
+				   struct device *dev)
 {
 	int ret = 0;
 
@@ -179,12 +154,12 @@ static int wkup_m3_init_scale_data(struct device *dev)
 	 * still work so return 0
 	 */
 
-	if (!m3_ipc_state.sd_fw_name)
+	if (!m3_ipc->sd_fw_name)
 		return ret;
 
 	ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
-				      m3_ipc_state.sd_fw_name, dev, GFP_ATOMIC,
-				      dev, wkup_m3_scale_data_fw_cb);
+				      m3_ipc->sd_fw_name, dev, GFP_ATOMIC,
+				      m3_ipc, wkup_m3_scale_data_fw_cb);
 
 	return ret;
 }
@@ -253,7 +228,7 @@ static irqreturn_t wkup_m3_txev_handler(int irq, void *ipc_data)
 		}
 
 		m3_ipc->state = M3_STATE_INITED;
-		wkup_m3_init_scale_data(dev);
+		wkup_m3_init_scale_data(m3_ipc, dev);
 		complete(&m3_ipc->sync_complete);
 		break;
 	case M3_STATE_MSG_FOR_RESET:
@@ -335,18 +310,19 @@ static int wkup_m3_ping_noirq(struct wkup_m3_ipc *m3_ipc)
 
 static int wkup_m3_is_available(struct wkup_m3_ipc *m3_ipc)
 {
-	return (m3_ipc->state != M3_STATE_RESET) && (m3_ipc->state != M3_STATE_UNKNOWN);
+	return ((m3_ipc->state != M3_STATE_RESET) &&
+		(m3_ipc->state != M3_STATE_UNKNOWN));
 }
 
-static void wkup_m3_set_vtt_gpio(int gpio)
+static void wkup_m3_set_vtt_gpio(struct wkup_m3_ipc *m3_ipc, int gpio)
 {
-	m3_ipc_state.vtt_conf = (1 << IPC_VTT_STAT_SHIFT) |
-				(gpio << IPC_VTT_GPIO_PIN_SHIFT);
+	m3_ipc->vtt_conf = (1 << IPC_VTT_STAT_SHIFT) |
+			    (gpio << IPC_VTT_GPIO_PIN_SHIFT);
 }
 
-static void wkup_m3_set_io_isolation(void)
+static void wkup_m3_set_io_isolation(struct wkup_m3_ipc *m3_ipc)
 {
-	m3_ipc_state.isolation_conf = (1 << IPC_IO_ISOLATION_STAT_SHIFT);
+	m3_ipc->isolation_conf = (1 << IPC_IO_ISOLATION_STAT_SHIFT);
 }
 
 /* Public functions */
@@ -357,27 +333,19 @@ static void wkup_m3_set_io_isolation(void)
  * wkup_m3 must know what memory type is in use to properly suspend
  * and resume.
  */
-void wkup_m3_set_mem_type(int mem_type)
+static void wkup_m3_set_mem_type(struct wkup_m3_ipc *m3_ipc, int mem_type)
 {
-	m3_ipc_state.mem_type = mem_type;
+	m3_ipc->mem_type = mem_type;
 }
-EXPORT_SYMBOL_GPL(wkup_m3_set_mem_type);
 
 /**
  * wkup_m3_set_resume_address - Pass wkup_m3 resume address
  * @addr: Physical address from which resume code should execute
  */
-void wkup_m3_set_resume_address(void *addr)
+static void wkup_m3_set_resume_address(struct wkup_m3_ipc *m3_ipc, void *addr)
 {
-	m3_ipc_state.resume_addr = (unsigned long)addr;
+	m3_ipc->resume_addr = (unsigned long)addr;
 }
-EXPORT_SYMBOL_GPL(wkup_m3_set_resume_address);
-
-void wkup_m3_set_rtc_only_mode(void)
-{
-	m3_ipc_state.is_rtc_only = true;
-}
-EXPORT_SYMBOL(wkup_m3_set_rtc_only_mode);
 
 /**
  * wkup_m3_request_pm_status - Retrieve wkup_m3 status code after suspend
@@ -386,9 +354,8 @@ EXPORT_SYMBOL(wkup_m3_set_rtc_only_mode);
  *	0 - Successful transition
  *	1 - Failure to transition to low power state
  */
-int wkup_m3_request_pm_status(void)
+static int wkup_m3_request_pm_status(struct wkup_m3_ipc *m3_ipc)
 {
-	struct wkup_m3_ipc *m3_ipc = &m3_ipc_state;
 	unsigned int i;
 	int val;
 
@@ -399,7 +366,6 @@ int wkup_m3_request_pm_status(void)
 
 	return i;
 }
-EXPORT_SYMBOL_GPL(wkup_m3_request_pm_status);
 
 /**
  * wkup_m3_prepare_low_power - Request preparation for transition to
@@ -408,10 +374,9 @@ EXPORT_SYMBOL_GPL(wkup_m3_request_pm_status);
  *
  * Returns 0 if preparation was successful, otherwise returns error code
  */
-int wkup_m3_prepare_low_power(int state)
+static int wkup_m3_prepare_low_power(struct wkup_m3_ipc *m3_ipc, int state)
 {
-	struct wkup_m3_ipc *m3_ipc = &m3_ipc_state;
-	struct device *dev = m3_ipc_state.dev;
+	struct device *dev = m3_ipc->dev;
 	int m3_power_state;
 	int ret = 0;
 
@@ -419,11 +384,11 @@ int wkup_m3_prepare_low_power(int state)
 		return -ENODEV;
 
 	switch (state) {
-	case PM_SUSPEND_MEM:
-		wkup_m3_ctrl_ipc_write(m3_ipc, m3_ipc->volt_scale_offsets, 5);
+	case WKUP_M3_DEEPSLEEP:
 		m3_power_state = IPC_CMD_DS0;
+		wkup_m3_ctrl_ipc_write(m3_ipc, m3_ipc->volt_scale_offsets, 5);
 		break;
-	case PM_SUSPEND_STANDBY:
+	case WKUP_M3_STANDBY:
 		m3_power_state = IPC_CMD_STANDBY;
 		wkup_m3_ctrl_ipc_write(m3_ipc, DS_IPC_DEFAULT, 5);
 		break;
@@ -436,12 +401,11 @@ int wkup_m3_prepare_low_power(int state)
 	}
 
 	/* Program each required IPC register then write defaults to others */
-	wkup_m3_ctrl_ipc_write(m3_ipc, m3_ipc_state.resume_addr, 0);
+	wkup_m3_ctrl_ipc_write(m3_ipc, m3_ipc->resume_addr, 0);
 	wkup_m3_ctrl_ipc_write(m3_ipc, m3_power_state, 1);
-	wkup_m3_ctrl_ipc_write(m3_ipc, m3_ipc_state.mem_type |
-			       m3_ipc_state.vtt_conf |
-			       m3_ipc_state.isolation_conf, 4);
-
+	wkup_m3_ctrl_ipc_write(m3_ipc, m3_ipc->mem_type |
+			       m3_ipc->vtt_conf |
+			       m3_ipc->isolation_conf, 4);
 	wkup_m3_ctrl_ipc_write(m3_ipc, DS_IPC_DEFAULT, 2);
 	wkup_m3_ctrl_ipc_write(m3_ipc, DS_IPC_DEFAULT, 3);
 	wkup_m3_ctrl_ipc_write(m3_ipc, DS_IPC_DEFAULT, 6);
@@ -461,17 +425,15 @@ int wkup_m3_prepare_low_power(int state)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wkup_m3_prepare_low_power);
 
 /**
  * wkup_m3_finish_low_power - Return m3 to reset state
  *
  * Returns 0 if reset was successful, otherwise returns error code
  */
-int wkup_m3_finish_low_power(void)
+static int wkup_m3_finish_low_power(struct wkup_m3_ipc *m3_ipc)
 {
-	struct wkup_m3_ipc *m3_ipc = &m3_ipc_state;
-	struct device *dev = m3_ipc_state.dev;
+	struct device *dev = m3_ipc->dev;
 	int ret = 0;
 
 	if (!wkup_m3_is_available(m3_ipc))
@@ -490,16 +452,14 @@ int wkup_m3_finish_low_power(void)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(wkup_m3_finish_low_power);
 
 /**
- * wkup_m3_wake_src - Get the wakeup source info passed from wkup_m3
+ * wkup_m3_request_wake_src - Get the wakeup source info passed from wkup_m3
  * @wkup_m3_wakeup: struct wkup_m3_wakeup_src * gets assigned the
  *		    wakeup src value
  */
-const char *wkup_m3_request_wake_src(void)
+static const char *wkup_m3_request_wake_src(struct wkup_m3_ipc *m3_ipc)
 {
-	struct wkup_m3_ipc *m3_ipc = &m3_ipc_state;
 	unsigned int wakeup_src_idx;
 	int j, val;
 
@@ -513,18 +473,66 @@ const char *wkup_m3_request_wake_src(void)
 	}
 	return wakeups[j].src;
 }
-EXPORT_SYMBOL(wkup_m3_request_wake_src);
 
-static void wkup_m3_rproc_boot_thread(struct rproc *rproc)
+/**
+ * wkup_m3_set_rtc_only - Set the rtc_only flag
+ * @wkup_m3_wakeup: struct wkup_m3_wakeup_src * gets assigned the
+ *                  wakeup src value
+ */
+static void wkup_m3_set_rtc_only(struct wkup_m3_ipc *m3_ipc)
 {
-	struct device *dev = &rproc->dev;
+	if (m3_ipc_state)
+		m3_ipc_state->is_rtc_only = true;
+}
+
+static struct wkup_m3_ipc_ops ipc_ops = {
+	.set_mem_type = wkup_m3_set_mem_type,
+	.set_resume_address = wkup_m3_set_resume_address,
+	.prepare_low_power = wkup_m3_prepare_low_power,
+	.finish_low_power = wkup_m3_finish_low_power,
+	.request_pm_status = wkup_m3_request_pm_status,
+	.request_wake_src = wkup_m3_request_wake_src,
+	.set_rtc_only = wkup_m3_set_rtc_only,
+};
+
+/**
+ * wkup_m3_ipc_get - Return handle to wkup_m3_ipc
+ *
+ * Returns NULL if the wkup_m3 is not yet available, otherwise returns
+ * pointer to wkup_m3_ipc struct.
+ */
+struct wkup_m3_ipc *wkup_m3_ipc_get(void)
+{
+	if (m3_ipc_state)
+		get_device(m3_ipc_state->dev);
+	else
+		return NULL;
+
+	return m3_ipc_state;
+}
+EXPORT_SYMBOL_GPL(wkup_m3_ipc_get);
+
+/**
+ * wkup_m3_ipc_put - Free handle to wkup_m3_ipc returned from wkup_m3_ipc_get
+ * @m3_ipc: A pointer to wkup_m3_ipc struct returned by wkup_m3_ipc_get
+ */
+void wkup_m3_ipc_put(struct wkup_m3_ipc *m3_ipc)
+{
+	if (m3_ipc_state)
+		put_device(m3_ipc_state->dev);
+}
+EXPORT_SYMBOL_GPL(wkup_m3_ipc_put);
+
+static void wkup_m3_rproc_boot_thread(struct wkup_m3_ipc *m3_ipc)
+{
+	struct device *dev = m3_ipc->dev;
 	int ret;
 
-	wait_for_completion(&rproc->firmware_loading_complete);
+	wait_for_completion(&m3_ipc->rproc->firmware_loading_complete);
 
-	init_completion(&m3_ipc_state.sync_complete);
+	init_completion(&m3_ipc->sync_complete);
 
-	ret = rproc_boot(rproc);
+	ret = rproc_boot(m3_ipc->rproc);
 	if (ret)
 		dev_err(dev, "rproc_boot failed\n");
 
@@ -535,79 +543,84 @@ static int wkup_m3_ipc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	int irq, ret, temp;
-	uint32_t rproc_phandle;
+	phandle rproc_phandle;
 	struct rproc *m3_rproc;
 	struct resource *res;
 	struct task_struct *task;
+	struct wkup_m3_ipc *m3_ipc;
 	struct device_node *np = dev->of_node;
 
+	m3_ipc = devm_kzalloc(dev, sizeof(*m3_ipc), GFP_KERNEL);
+	if (!m3_ipc)
+		return -ENOMEM;
+
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	m3_ipc_state.ipc_mem_base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(m3_ipc_state.ipc_mem_base)) {
+	m3_ipc->ipc_mem_base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(m3_ipc->ipc_mem_base)) {
 		dev_err(dev, "could not ioremap ipc_mem\n");
-		ret = PTR_ERR(m3_ipc_state.ipc_mem_base);
-		return ret;
+		return PTR_ERR(m3_ipc->ipc_mem_base);
 	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (!irq) {
 		dev_err(&pdev->dev, "no irq resource\n");
-		ret = -ENXIO;
-		return ret;
+		return -ENXIO;
 	}
 
 	ret = devm_request_irq(dev, irq, wkup_m3_txev_handler,
-			       0, "wkup_m3_txev", &m3_ipc_state);
+			       0, "wkup_m3_txev", m3_ipc);
 	if (ret) {
 		dev_err(dev, "request_irq failed\n");
 		return ret;
 	}
 
-	m3_ipc_state.mbox_client.dev = dev;
-	m3_ipc_state.mbox_client.tx_done = NULL;
-	m3_ipc_state.mbox_client.rx_callback = NULL;
-	m3_ipc_state.mbox_client.tx_block = false;
-	m3_ipc_state.mbox_client.knows_txdone = false;
+	m3_ipc->mbox_client.dev = dev;
+	m3_ipc->mbox_client.tx_done = NULL;
+	m3_ipc->mbox_client.tx_prepare = NULL;
+	m3_ipc->mbox_client.rx_callback = NULL;
+	m3_ipc->mbox_client.tx_block = false;
+	m3_ipc->mbox_client.knows_txdone = false;
 
-	m3_ipc_state.mbox = mbox_request_channel(&m3_ipc_state.mbox_client, 0);
-	if (IS_ERR(m3_ipc_state.mbox)) {
+	m3_ipc->mbox = mbox_request_channel(&m3_ipc->mbox_client, 0);
+
+	if (IS_ERR(m3_ipc->mbox)) {
 		dev_err(dev, "IPC Request for A8->M3 Channel failed! %ld\n",
-			PTR_ERR(m3_ipc_state.mbox));
-		ret = PTR_ERR(m3_ipc_state.mbox);
-		m3_ipc_state.mbox = NULL;
-		return ret;
+			PTR_ERR(m3_ipc->mbox));
+		return PTR_ERR(m3_ipc->mbox);
 	}
 
 	if (of_property_read_u32(dev->of_node, "ti,rproc", &rproc_phandle)) {
 		dev_err(&pdev->dev, "could not get rproc phandle\n");
 		ret = -ENODEV;
-		goto err;
+		goto err_free_mbox;
 	}
 
 	m3_rproc = rproc_get_by_phandle(rproc_phandle);
 	if (!m3_rproc) {
 		dev_err(&pdev->dev, "could not get rproc handle\n");
 		ret = -EPROBE_DEFER;
-		goto err;
+		goto err_free_mbox;
 	}
 
-	m3_ipc_state.rproc = m3_rproc;
-	m3_ipc_state.dev = dev;
-	m3_ipc_state.state = M3_STATE_RESET;
+	m3_ipc->rproc = m3_rproc;
+	m3_ipc->dev = dev;
+	m3_ipc->state = M3_STATE_RESET;
+
+	m3_ipc->ops = &ipc_ops;
 
 	if (of_find_property(np, "ti,needs-vtt-toggle", NULL) &&
 	    !(of_property_read_u32(np, "ti,vtt-gpio-pin", &temp))) {
 		if (temp >= 0 && temp <= 31)
-			wkup_m3_set_vtt_gpio(temp);
+			wkup_m3_set_vtt_gpio(m3_ipc, temp);
 		else
 			dev_warn(dev, "Invalid VTT GPIO(%d) pin\n", temp);
 	}
 
 	if (of_find_property(np, "ti,set-io-isolation", NULL))
-		wkup_m3_set_io_isolation();
+		wkup_m3_set_io_isolation(m3_ipc);
 
 	ret = of_property_read_string(np, "ti,scale-data-fw",
-				      &m3_ipc_state.sd_fw_name);
+				      &m3_ipc->sd_fw_name);
 	if (ret) {
 		dev_dbg(dev, "Voltage scaling data blob not provided from DT.\n");
 	};
@@ -617,7 +630,7 @@ static int wkup_m3_ipc_probe(struct platform_device *pdev)
 	 * can boot the wkup_m3 as soon as it's ready without holding
 	 * up kernel boot
 	 */
-	task = kthread_run((void *)wkup_m3_rproc_boot_thread, m3_rproc,
+	task = kthread_run((void *)wkup_m3_rproc_boot_thread, m3_ipc,
 			   "wkup_m3_rproc_loader");
 
 	if (IS_ERR(task)) {
@@ -625,21 +638,25 @@ static int wkup_m3_ipc_probe(struct platform_device *pdev)
 		goto err_put_rproc;
 	}
 
+	m3_ipc_state = m3_ipc;
+
 	return 0;
 
 err_put_rproc:
 	rproc_put(m3_rproc);
-err:
-	mbox_free_channel(m3_ipc_state.mbox);
+err_free_mbox:
+	mbox_free_channel(m3_ipc->mbox);
 	return ret;
 }
 
 static int wkup_m3_ipc_remove(struct platform_device *pdev)
 {
-	mbox_free_channel(m3_ipc_state.mbox);
+	mbox_free_channel(m3_ipc_state->mbox);
 
-	rproc_shutdown(m3_ipc_state.rproc);
-	rproc_put(m3_ipc_state.rproc);
+	rproc_shutdown(m3_ipc_state->rproc);
+	rproc_put(m3_ipc_state->rproc);
+
+	m3_ipc_state = NULL;
 
 	return 0;
 }
@@ -647,12 +664,12 @@ static int wkup_m3_ipc_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM_SLEEP
 static int wkup_m3_ipc_resume(struct device *dev)
 {
-	if (m3_ipc_state.is_rtc_only) {
-		rproc_shutdown(m3_ipc_state.rproc);
-		rproc_boot(m3_ipc_state.rproc);
+	if (m3_ipc_state->is_rtc_only) {
+		rproc_shutdown(m3_ipc_state->rproc);
+		rproc_boot(m3_ipc_state->rproc);
 	}
 
-	m3_ipc_state.is_rtc_only = false;
+	m3_ipc_state->is_rtc_only = false;
 
 	return 0;
 }
@@ -667,6 +684,7 @@ static const struct of_device_id wkup_m3_ipc_of_match[] = {
 	{ .compatible = "ti,am4372-wkup-m3-ipc", },
 	{},
 };
+MODULE_DEVICE_TABLE(of, wkup_m3_ipc_of_match);
 
 static struct platform_driver wkup_m3_ipc_driver = {
 	.probe = wkup_m3_ipc_probe,

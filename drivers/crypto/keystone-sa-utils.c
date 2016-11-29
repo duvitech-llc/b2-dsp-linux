@@ -1,7 +1,7 @@
 /*
  * Keystone crypto accelerator driver
  *
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com
+ * Copyright (C) 2015, 2016 Texas Instruments Incorporated - http://www.ti.com
  *
  * Authors:	Sandeep Nair
  *		Vitaly Andrianov
@@ -19,39 +19,58 @@
  * General Public License for more details.
  */
 
-#include <linux/clk.h>
-#include <linux/err.h>
-#include <linux/init.h>
-#include <linux/slab.h>
-#include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/dmapool.h>
-#include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/rtnetlink.h>
-#include <linux/dma-mapping.h>
+#include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/soc/ti/knav_dma.h>
 #include <linux/soc/ti/knav_qmss.h>
 
 #include <linux/crypto.h>
-#include <linux/hw_random.h>
-#include <linux/cryptohash.h>
 #include <crypto/algapi.h>
 #include <crypto/aead.h>
+#include <crypto/internal/aead.h>
 #include <crypto/authenc.h>
-#include <crypto/hash.h>
-#include <crypto/internal/hash.h>
-#include <crypto/aes.h>
 #include <crypto/des.h>
 #include <crypto/sha.h>
-#include <crypto/md5.h>
 #include <crypto/scatterwalk.h>
 
 #include "keystone-sa.h"
 #include "keystone-sa-hlp.h"
 
-struct device *sa_ks2_dev;
+#define SA_SW0_EVICT_FL_SHIFT	16
+#define SA_SW0_TEAR_FL_SHIFT	17
+#define SA_SW0_NOPAYLD_FL_SHIFT	18
+#define SA_SW0_CMDL_INFO_SHIFT	20
+#define SA_SW0_ENG_ID_SHIFT	25
+#define SA_SW0_CPPI_DST_INFO_PRESENT	BIT(30)
+#define SA_CMDL_PRESENT		BIT(4)
+
+#define SA_SW2_EGRESS_CPPI_FLOW_ID_SHIFT	16
+#define SA_SW2_EGRESS_CPPI_STATUS_LEN_SHIFT	24
+
+#define SA_CMDL_UPD_ENC		0x0001
+#define SA_CMDL_UPD_AUTH	0x0002
+#define SA_CMDL_UPD_ENC_IV	0x0004
+#define SA_CMDL_UPD_AUTH_IV	0x0008
+#define SA_CMDL_UPD_AUX_KEY	0x0010
+
+/* size of SCCTL structure in bytes */
+#define SA_SCCTL_SZ 8
+
+/* Tear down the Security Context */
+#define SA_SC_TEAR_RETRIES	5
+#define SA_SC_TEAR_DELAY	20 /* msecs */
+
+/*	Algorithm interface functions & templates	*/
+struct sa_alg_tmpl {
+	u32 type; /* CRYPTO_ALG_TYPE from <linux/crypto.h> */
+	union {
+		struct crypto_alg crypto;
+		struct aead_alg aead;
+	} alg;
+	bool registered;
+};
 
 /* Number of elements in scatterlist */
 static int sg_count(struct scatterlist *sg, int len)
@@ -77,71 +96,6 @@ static int sg_len(struct scatterlist *sg)
 	}
 	return len;
 }
-
-/* Clone SG list without copying the buffer */
-static inline void sa_clone_sg(struct scatterlist *src,
-		struct scatterlist *dst, unsigned int nbytes)
-{
-	while ((nbytes > 0) && src && dst) {
-		struct page *pg = sg_page(src);
-		unsigned int len = min(nbytes, src->length);
-
-		sg_set_page(dst, pg, len, src->offset);
-		src = sg_next(src);
-		dst = sg_next(dst);
-		nbytes -= len;
-	}
-}
-
-static inline unsigned int sa_scatterwalk_sglen(struct scatter_walk *walk)
-{
-	return walk->sg->offset + walk->sg->length - walk->offset;
-}
-
-static inline void *sa_scatterwalk_vaddr(struct scatter_walk *walk)
-{
-	return sg_virt(walk->sg) + (walk->offset - walk->sg->offset);
-}
-
-static inline void sa_scatterwalk_sgdone(struct scatter_walk *walk, size_t len)
-{
-	if (walk->offset >= walk->sg->offset + walk->sg->length)
-		scatterwalk_start(walk, sg_next(walk->sg));
-}
-
-/* scatterwalk_copychunks() for mapped SG list */
-static inline void
-sa_scatterwalk_copychunks(void *buf,
-			  struct scatter_walk *walk, unsigned int nbytes,
-			  int out)
-{
-	unsigned int len_this_sg;
-
-	for (;;) {
-		len_this_sg = sa_scatterwalk_sglen(walk);
-
-		if (len_this_sg > nbytes)
-			len_this_sg = nbytes;
-
-		if (out)
-			memcpy(sa_scatterwalk_vaddr(walk), buf,
-					len_this_sg);
-		else
-			memcpy(buf, sa_scatterwalk_vaddr(walk),
-					len_this_sg);
-
-		scatterwalk_advance(walk, len_this_sg);
-
-		if (nbytes == len_this_sg)
-			break;
-
-		buf += len_this_sg;
-		nbytes -= len_this_sg;
-
-		sa_scatterwalk_sgdone(walk, len_this_sg);
-	}
-}
-
 /* Copy buffer content from list of hwdesc-s to DST SG list */
 static int sa_hwdesc2sg_copy(struct knav_dma_desc **hwdesc,
 			     struct scatterlist *dst,
@@ -153,17 +107,18 @@ static int sa_hwdesc2sg_copy(struct knav_dma_desc **hwdesc,
 	int j = 0;
 
 	sglen = hwdesc[0]->desc_info & KNAV_DMA_DESC_PKT_LEN_MASK;
+
 	if (unlikely(len + src_offset > sglen)) {
 		pr_err("[%s] src len(%d) less than (%d)\n", __func__,
 		       sglen, len + src_offset);
-		return -1;
+		return -EINVAL;
 	}
 
 	sglen = sg_len(dst);
 	if (unlikely(len + dst_offset > sglen)) {
 		pr_err("[%s] dst len(%d) less than (%d)\n", __func__,
 		       sglen, len + dst_offset);
-		return -1;
+		return -EINVAL;
 	}
 
 	scatterwalk_start(&walk, dst);
@@ -171,7 +126,7 @@ static int sa_hwdesc2sg_copy(struct knav_dma_desc **hwdesc,
 	while ((j < num) && (len > 0)) {
 		cplen = min((int)len, (int)(hwdesc[j]->buff_len - src_offset));
 		if (likely(cplen)) {
-			sa_scatterwalk_copychunks(((char *)hwdesc[j]->pad[0] +
+			scatterwalk_copychunks(((char *)hwdesc[j]->pad[0] +
 						   src_offset),
 						  &walk, cplen, 1);
 		}
@@ -182,8 +137,8 @@ static int sa_hwdesc2sg_copy(struct knav_dma_desc **hwdesc,
 	return 0;
 }
 
-void sa_scatterwalk_copy(void *buf, struct scatterlist *sg,
-			 unsigned int start, unsigned int nbytes, int out)
+static void scatterwalk_copy(void *buf, struct scatterlist *sg,
+			     unsigned int start, unsigned int nbytes, int out)
 {
 	struct scatter_walk walk;
 	unsigned int offset = 0;
@@ -202,12 +157,10 @@ void sa_scatterwalk_copy(void *buf, struct scatterlist *sg,
 	}
 
 	scatterwalk_advance(&walk, start - offset);
-	sa_scatterwalk_copychunks(buf, &walk, nbytes, out);
+	scatterwalk_copychunks(buf, &walk, nbytes, out);
 }
 
-/******************************************************************************
- * Command Label Definitions and utility functions
- ******************************************************************************/
+/* Command Label Definitions and utility functions */
 struct sa_cmdl_cfg {
 	int	enc1st;
 	int	aalg;
@@ -218,19 +171,14 @@ struct sa_cmdl_cfg {
 	u16	akey_len;
 };
 
-#define SA_CMDL_UPD_ENC		0x0001
-#define SA_CMDL_UPD_AUTH	0x0002
-#define SA_CMDL_UPD_ENC_IV	0x0004
-#define SA_CMDL_UPD_AUTH_IV	0x0008
-#define SA_CMDL_UPD_AUX_KEY	0x0010
-
 /* Format general command label */
 static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
-				struct sa_cmdl_upd_info *upd_info)
+			      struct sa_cmdl_upd_info *upd_info)
 {
 	u8 offset = 0;
 	u32 *word_ptr = (u32 *)cmdl;
 	int i;
+	int ret = 0;
 
 	/* Clear the command label */
 	memset(cmdl, 0, (SA_MAX_CMDL_WORDS * sizeof(u32)));
@@ -246,12 +194,13 @@ static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
 	upd_info->auth_offset.size = 1;
 
 	if (cfg->aalg == SA_AALG_ID_AES_XCBC) {
-
 		/* Derive K2/K3 subkeys */
-		if (sa_aes_xcbc_subkey(NULL, (u8 *)&upd_info->aux_key[0],
-			(u8 *)&upd_info->aux_key[AES_BLOCK_SIZE/sizeof(u32)],
-			cfg->akey, cfg->akey_len))
-			return -1;
+		ret = sa_aes_xcbc_subkey(NULL, (u8 *)&upd_info->aux_key[0],
+					 (u8 *)&upd_info->aux_key[AES_BLOCK_SIZE
+					 / sizeof(u32)],
+					 cfg->akey, cfg->akey_len);
+		if (ret)
+			return ret;
 
 		/*
 		 * Format the key into 32bit CPU words
@@ -312,7 +261,7 @@ static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
 
 			/* Algorithm with subkeys */
 			if ((cfg->aalg == SA_AALG_ID_AES_XCBC) ||
-				(cfg->aalg == SA_AALG_ID_CMAC)) {
+			    (cfg->aalg == SA_AALG_ID_CMAC)) {
 				upd_info->flags |= SA_CMDL_UPD_AUX_KEY;
 				upd_info->aux_key_info.index =
 				(offset + SA_CMDL_HEADER_SIZE_BYTES) >> 2;
@@ -337,7 +286,7 @@ static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
 			upd_info->auth_offset.index = 1;
 
 			if ((cfg->auth_eng_id == SA_ENG_ID_EM1) &&
-				(cfg->enc_eng_id == SA_ENG_ID_EM1))
+			    (cfg->enc_eng_id == SA_ENG_ID_EM1))
 				cfg->enc_eng_id = SA_ENG_ID_EM2;
 
 			/* Authentication command label */
@@ -348,7 +297,7 @@ static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
 
 			/* Algorithm with subkeys */
 			if ((cfg->aalg == SA_AALG_ID_AES_XCBC) ||
-				(cfg->aalg == SA_AALG_ID_CMAC)) {
+			    (cfg->aalg == SA_AALG_ID_CMAC)) {
 				upd_info->flags |= SA_CMDL_UPD_AUX_KEY;
 				upd_info->aux_key_info.index =
 					(SA_CMDL_HEADER_SIZE_BYTES) >> 2;
@@ -399,15 +348,22 @@ static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
 
 	offset = roundup(offset, 8);
 
-	for (i = 0; i < offset/4; i++)
+	for (i = 0; i < offset / 4; i++)
 		word_ptr[i] = be32_to_cpu(word_ptr[i]);
 
 	return offset;
 }
 
-/* Make 32-bit word from 4 bytes */
-#define SA_MK_U32(b0, b1, b2, b3) (((b0) << 24) | ((b1) << 16) | \
-					((b2) << 8) | (b3))
+static inline void sa_copy_iv(u32 *out, const u8 *iv, bool size16)
+{
+	int j;
+
+	for (j = 0; j < ((size16) ? 4 : 2); j++) {
+		*out = cpu_to_be32(*((u32 *)iv));
+		iv += 4;
+		out++;
+	}
+}
 
 /* Update Command label */
 static inline void
@@ -425,23 +381,9 @@ sa_update_cmdl(struct device *dev, u8 enc_offset, u16 enc_size,	u8 *enc_iv,
 						((u32)enc_offset << 24);
 
 			if (likely(upd_info->flags & SA_CMDL_UPD_ENC_IV)) {
-				u32 *data = &cmdl[upd_info->enc_iv.index];
-
-				data[0] = SA_MK_U32(enc_iv[0], enc_iv[1],
-						    enc_iv[2], enc_iv[3]);
-				data[1] = SA_MK_U32(enc_iv[4], enc_iv[5],
-						    enc_iv[6], enc_iv[7]);
-
-				if (upd_info->enc_iv.size > 8) {
-					data[2] = SA_MK_U32(enc_iv[8],
-							    enc_iv[9],
-							    enc_iv[10],
-							    enc_iv[11]);
-					data[3] = SA_MK_U32(enc_iv[12],
-							    enc_iv[13],
-							    enc_iv[14],
-							    enc_iv[15]);
-				}
+				sa_copy_iv(&cmdl[upd_info->enc_iv.index],
+					   enc_iv,
+					   (upd_info->enc_iv.size > 8));
 			}
 		}
 
@@ -453,26 +395,16 @@ sa_update_cmdl(struct device *dev, u8 enc_offset, u16 enc_size,	u8 *enc_iv,
 					((u32)auth_offset << 24);
 
 			if (upd_info->flags & SA_CMDL_UPD_AUTH_IV) {
-				u32 *data = &cmdl[upd_info->auth_iv.index];
-
-				data[0] = SA_MK_U32(auth_iv[0], auth_iv[1],
-							auth_iv[2], auth_iv[3]);
-				data[1] = SA_MK_U32(auth_iv[4], auth_iv[5],
-							auth_iv[6], auth_iv[7]);
-
-				if (upd_info->auth_iv.size > 8) {
-					data[2] = SA_MK_U32(auth_iv[8],
-					auth_iv[9], auth_iv[10], auth_iv[11]);
-					data[3] = SA_MK_U32(auth_iv[12],
-					auth_iv[13], auth_iv[14], auth_iv[15]);
-				}
+				sa_copy_iv(&cmdl[upd_info->auth_iv.index],
+					   auth_iv,
+					   (upd_info->auth_iv.size > 8));
 			}
 
 			if (upd_info->flags & SA_CMDL_UPD_AUX_KEY) {
 				int offset = (auth_size & 0xF) ? 4 : 0;
 
 				memcpy(&cmdl[upd_info->aux_key_info.index],
-						&upd_info->aux_key[offset], 16);
+				       &upd_info->aux_key[offset], 16);
 			}
 		}
 		break;
@@ -483,50 +415,48 @@ sa_update_cmdl(struct device *dev, u8 enc_offset, u16 enc_size,	u8 *enc_iv,
 	default:
 		dev_err(dev, "unsupported mode(%d)\n", upd_info->submode);
 		break;
-
 	}
 }
 
 /* Format SWINFO words to be sent to SA */
-static void sa_set_swinfo(u8 eng_id, u16 sc_id, dma_addr_t sc_phys,
-		u8 cmdl_present, u8 cmdl_offset, u8 flags, u16 queue_id,
-		u8 flow_id, u8 hash_size, u32 *swinfo)
+static
+void sa_set_swinfo(u8 eng_id, u16 sc_id, dma_addr_t sc_phys,
+		   u8 cmdl_present, u8 cmdl_offset, u8 flags, u16 queue_id,
+		   u8 flow_id, u8 hash_size, u32 *swinfo)
 {
 	swinfo[0] = sc_id;
-	swinfo[0] |= (flags << 16);
+	swinfo[0] |= (flags << SA_SW0_EVICT_FL_SHIFT);
 	if (likely(cmdl_present))
-		swinfo[0] |= ((cmdl_offset | 0x10)  << 20);
-	swinfo[0] |= (eng_id << 25);
-	swinfo[0] |= 0x40000000;
+		swinfo[0] |= ((cmdl_offset | SA_CMDL_PRESENT) <<
+			      SA_SW0_CMDL_INFO_SHIFT);
+	swinfo[0] |= (eng_id << SA_SW0_ENG_ID_SHIFT);
+	swinfo[0] |= SA_SW0_CPPI_DST_INFO_PRESENT;
 	swinfo[1] = sc_phys;
-	swinfo[2] = (queue_id | (flow_id << 16) | (hash_size << 24));
+	swinfo[2] = (queue_id | (flow_id << SA_SW2_EGRESS_CPPI_FLOW_ID_SHIFT) |
+		     (hash_size << SA_SW2_EGRESS_CPPI_STATUS_LEN_SHIFT));
 }
 
-/******************************************************************************
- * Security context creation functions
- ******************************************************************************/
+/* Security context creation functions */
 
 /* Dump the security context */
 static void sa_dump_sc(u8 *buf, u32 dma_addr)
 {
 #ifdef DEBUG
 	dev_info(sa_ks2_dev, "Security context dump for %p:\n",
-			(void *)dma_addr);
+		 (void *)dma_addr);
 	print_hex_dump(KERN_CONT, "", DUMP_PREFIX_OFFSET,
-			16, 1, buf, SA_CTX_MAX_SZ, false);
+		       16, 1, buf, SA_CTX_MAX_SZ, false);
 #endif
 }
 
-/* size of SCCTL structure in bytes */
-#define SA_SCCTL_SZ 8
-
 /* Initialize Security context */
-static int sa_init_sc(struct sa_ctx_info *ctx, const u8 *enc_key,
-			u16 enc_key_sz, const u8 *auth_key, u16 auth_key_sz,
-			const char *cra_name, u8 enc,
-			u32 *swinfo)
+static
+int sa_init_sc(struct sa_ctx_info *ctx, const u8 *enc_key,
+	       u16 enc_key_sz, const u8 *auth_key, u16 auth_key_sz,
+	       const char *cra_name, u8 enc,
+	       u32 *swinfo)
 {
-	struct sa_eng_info enc_eng, auth_eng;
+	struct sa_eng_info *enc_eng, *auth_eng;
 	int ealg_id, aalg_id, use_enc = 0;
 	int enc_sc_offset, auth_sc_offset;
 	u8 php_f, php_e, eng0_f, eng1_f;
@@ -535,61 +465,62 @@ static int sa_init_sc(struct sa_ctx_info *ctx, const u8 *enc_key,
 	u16 aad_len = 0; /* Currently not supporting AEAD algo */
 	u8 first_engine;
 	u8 hash_size;
+	int ret = 0;
 
 	memset(sc_buf, 0, SA_CTX_MAX_SZ);
 	sa_conv_calg_to_salg(cra_name, &ealg_id, &aalg_id);
-	sa_get_engine_info(ealg_id, &enc_eng);
-	sa_get_engine_info(aalg_id, &auth_eng);
+	enc_eng = sa_get_engine_info(ealg_id);
+	auth_eng = sa_get_engine_info(aalg_id);
 
-	if (!enc_eng.sc_size && !auth_eng.sc_size)
-		return -1;
+	if (!enc_eng->sc_size && !auth_eng->sc_size)
+		return -EINVAL;
 
-	if (auth_eng.eng_id <= SA_ENG_ID_EM2)
+	if (auth_eng->eng_id <= SA_ENG_ID_EM2)
 		use_enc = 1;
 
 	/* Determine the order of encryption & Authentication contexts */
 	if (enc || !use_enc) {
-		eng0_f = SA_CTX_SIZE_TO_DMA_SIZE(enc_eng.sc_size);
-		eng1_f = SA_CTX_SIZE_TO_DMA_SIZE(auth_eng.sc_size);
+		eng0_f = SA_CTX_SIZE_TO_DMA_SIZE(enc_eng->sc_size);
+		eng1_f = SA_CTX_SIZE_TO_DMA_SIZE(auth_eng->sc_size);
 		enc_sc_offset = SA_CTX_PHP_PE_CTX_SZ;
-		auth_sc_offset = enc_sc_offset + enc_eng.sc_size;
+		auth_sc_offset = enc_sc_offset + enc_eng->sc_size;
 	} else {
-		eng0_f = SA_CTX_SIZE_TO_DMA_SIZE(auth_eng.sc_size);
-		eng1_f = SA_CTX_SIZE_TO_DMA_SIZE(enc_eng.sc_size);
+		eng0_f = SA_CTX_SIZE_TO_DMA_SIZE(auth_eng->sc_size);
+		eng1_f = SA_CTX_SIZE_TO_DMA_SIZE(enc_eng->sc_size);
 		auth_sc_offset = SA_CTX_PHP_PE_CTX_SZ;
-		enc_sc_offset = auth_sc_offset + auth_eng.sc_size;
+		enc_sc_offset = auth_sc_offset + auth_eng->sc_size;
 	}
 
-	php_f = php_e = SA_CTX_DMA_SIZE_64;
+	php_f = SA_CTX_DMA_SIZE_64;
+	php_e = SA_CTX_DMA_SIZE_64;
 
 	/* SCCTL Owner info: 0=host, 1=CP_ACE */
 	sc_buf[SA_CTX_SCCTL_OWNER_OFFSET] = 0;
 	/* SCCTL F/E control */
 	sc_buf[1] = SA_CTX_SCCTL_MK_DMA_INFO(php_f, eng0_f, eng1_f, php_e);
-	memcpy(&sc_buf[2], &sc_id, 2); /*(optional)
-					 Filled here for reference only */
-	memcpy(&sc_buf[4], &ctx->sc_phys, 4); /*(optional)
-					Filled here for reference only */
+	memcpy(&sc_buf[2], &sc_id, 2);
+	memcpy(&sc_buf[4], &ctx->sc_phys, 4);
 
 	/* Initialize the rest of PHP context */
 	memset(sc_buf + SA_SCCTL_SZ, 0, SA_CTX_PHP_PE_CTX_SZ - SA_SCCTL_SZ);
 
 	/* Prepare context for encryption engine */
-	if (enc_eng.sc_size) {
-		if (sa_set_sc_enc(ealg_id, enc_key, enc_key_sz, aad_len,
-				enc, &sc_buf[enc_sc_offset]))
-			return -1;
+	if (enc_eng->sc_size) {
+		ret = sa_set_sc_enc(ealg_id, enc_key, enc_key_sz, aad_len,
+				    enc, &sc_buf[enc_sc_offset]);
+		if (ret)
+			return ret;
 	}
 
 	/* Prepare context for authentication engine */
-	if (auth_eng.sc_size) {
+	if (auth_eng->sc_size) {
 		if (use_enc) {
 			if (sa_set_sc_enc(aalg_id, auth_key, auth_key_sz,
-					aad_len, 0, &sc_buf[auth_sc_offset]))
+					  aad_len, 0, &sc_buf[auth_sc_offset]))
 				return -1;
 		} else
 			sa_set_sc_auth(aalg_id, auth_key, auth_key_sz,
-					&sc_buf[auth_sc_offset]);
+				       &sc_buf[auth_sc_offset]);
 	}
 
 	/* Set the ownership of context to CP_ACE */
@@ -599,38 +530,34 @@ static int sa_init_sc(struct sa_ctx_info *ctx, const u8 *enc_key,
 	sa_swiz_128(sc_buf, sc_buf, SA_CTX_MAX_SZ);
 
 	/* Setup SWINFO */
-	if (ealg_id == SA_EALG_ID_NULL)
-		first_engine = auth_eng.eng_id;
-	else
-		first_engine = enc ? enc_eng.eng_id : auth_eng.eng_id;
+	first_engine = enc ? enc_eng->eng_id : auth_eng->eng_id;
 
 	/* TODO: take care of AEAD algorithms */
 	hash_size = sa_get_hash_size(aalg_id);
 	if (!hash_size)
-		return -1;
+		return -EINVAL;
 	/* Round up the tag size to multiple of 8 */
 	hash_size = roundup(hash_size, 8);
 
+	sa_set_swinfo(first_engine, ctx->sc_id, ctx->sc_phys, 1, 0,
 #ifndef TEST
-	sa_set_swinfo(first_engine, ctx->sc_id, ctx->sc_phys, 1, 0,
-			0, ctx->rx_compl_qid, ctx->rx_flow, hash_size, swinfo);
+		      0,
 #else
-	/* For run-time self tests in the cryptographic
-	 * algorithm manager framework */
-	sa_set_swinfo(first_engine, ctx->sc_id, ctx->sc_phys, 1, 0,
-			SA_SW_INFO_FLAG_EVICT, ctx->rx_compl_qid, ctx->rx_flow,
-			hash_size, swinfo);
+	/*
+	 * For run-time self tests in the cryptographic
+	 * algorithm manager framework
+	 */
+		      SA_SW_INFO_FLAG_EVICT,
 #endif
+		      ctx->rx_compl_qid, ctx->rx_flow, hash_size, swinfo);
+
 	sa_dump_sc(sc_buf, ctx->sc_phys);
 
 	return 0;
 }
 
-/* Tear down the Security Context */
-#define SA_SC_TEAR_RETRIES	5
-#define SA_SC_TEAR_DELAY	20 /* msecs */
 static int sa_tear_sc(struct sa_ctx_info *ctx,
-			struct keystone_crypto_data *pdata)
+		      struct keystone_crypto_data *pdata)
 {
 	struct device *dev = &pdata->pdev->dev;
 	int own_off, cnt = SA_SC_TEAR_RETRIES;
@@ -652,9 +579,9 @@ static int sa_tear_sc(struct sa_ctx_info *ctx,
 	dma_ctx->pkt = false;
 
 	sa_set_swinfo(SA_ENG_ID_OUTPORT2, ctx->sc_id, ctx->sc_phys, 0, 0,
-		(SA_SW_INFO_FLAG_TEAR | SA_SW_INFO_FLAG_EVICT |
-		SA_SW_INFO_FLAG_NOPD), ctx->rx_compl_qid, ctx->rx_flow, 0,
-		&ctx->epib[1]);
+		      (SA_SW_INFO_FLAG_TEAR | SA_SW_INFO_FLAG_EVICT |
+		       SA_SW_INFO_FLAG_NOPD),
+		      ctx->rx_compl_qid, ctx->rx_flow, 0, &ctx->epib[1]);
 
 	ctx->epib[0] = 0;
 
@@ -676,7 +603,7 @@ static int sa_tear_sc(struct sa_ctx_info *ctx,
 	hwdesc->packet_info  = packet_info;
 
 	knav_pool_desc_map(pdata->tx_pool, hwdesc, sizeof(hwdesc),
-				   &dma_addr, &dma_sz);
+			   &dma_addr, &dma_sz);
 
 	hwdesc->pad[0] = (u32)dma_addr;
 	hwdesc->pad[1] = dma_sz;
@@ -693,7 +620,7 @@ static int sa_tear_sc(struct sa_ctx_info *ctx,
 	 * Security context had been swizzled by 128 bits
 	 * before handing to CP_ACE
 	 */
-	own_off = ((SA_CTX_SCCTL_OWNER_OFFSET/16) * 16)
+	own_off = ((SA_CTX_SCCTL_OWNER_OFFSET / 16) * 16)
 		+ (15 - (SA_CTX_SCCTL_OWNER_OFFSET % 16));
 	while (__raw_readb(&ctx->sc[own_off])) {
 		if (!--cnt)
@@ -709,28 +636,18 @@ err:
 	return ret;
 }
 
-/************************************************************/
-/*	Algorithm interface functions & templates	*/
-/************************************************************/
-struct sa_alg_tmpl {
-	u32 type; /* CRYPTO_ALG_TYPE from <linux/crypto.h> */
-	union {
-		struct crypto_alg crypto;
-		struct ahash_alg hash;
-	} alg;
-	int registered;
-};
-
 /* Free the per direction context memory */
-static void sa_free_ctx_info(struct sa_ctx_info *ctx,
+static int sa_free_ctx_info(struct sa_ctx_info *ctx,
 			     struct keystone_crypto_data *data)
 {
 	unsigned long bn;
+	int	ret = 0;
 
-	if (sa_tear_sc(ctx, data)) {
+	ret = sa_tear_sc(ctx, data);
+	if (ret) {
 		dev_err(sa_ks2_dev,
 			"Failed to tear down context id(%x)\n", ctx->sc_id);
-		return;
+		return ret;
 	}
 
 	bn = ctx->sc_id - data->sc_id_start;
@@ -743,6 +660,8 @@ static void sa_free_ctx_info(struct sa_ctx_info *ctx,
 		dma_pool_free(data->sc_pool, ctx->sc, ctx->sc_phys);
 		ctx->sc = NULL;
 	}
+
+	return 0;
 }
 
 /* Initialize the per direction context memory */
@@ -756,7 +675,7 @@ static int sa_init_ctx_info(struct sa_ctx_info *ctx,
 	if (data->sc_id > data->sc_id_end) {
 		spin_unlock(&data->scid_lock);
 		dev_err(&data->pdev->dev, "Out of SC IDs\n");
-		return -1;
+		return -ENOMEM;
 	}
 	bn = find_first_zero_bit(data->ctx_bm, SA_MAX_NUM_CTX);
 	__set_bit(bn, data->ctx_bm);
@@ -790,34 +709,14 @@ scid_rollback:
 static int sa_init_tfm(struct crypto_tfm *tfm)
 {
 	struct crypto_alg *alg = tfm->__crt_alg;
-	struct sa_alg_tmpl *sa_alg;
 	struct sa_tfm_ctx *ctx = crypto_tfm_ctx(tfm);
 	struct keystone_crypto_data *data = dev_get_drvdata(sa_ks2_dev);
 	int ret;
 
-	if ((alg->cra_flags & CRYPTO_ALG_TYPE_MASK) == CRYPTO_ALG_TYPE_AHASH)
-		sa_alg = container_of(__crypto_ahash_alg(alg),
-					struct sa_alg_tmpl, alg.hash);
-	else
-		sa_alg = container_of(alg, struct sa_alg_tmpl, alg.crypto);
+	if ((alg->cra_flags & CRYPTO_ALG_TYPE_MASK) == CRYPTO_ALG_TYPE_AEAD) {
+		memset(ctx, 0, sizeof(*ctx));
+		ctx->dev_data = data;
 
-	memset(ctx, 0, sizeof(*ctx));
-	ctx->dev_data = data;
-
-	if (sa_alg->type == CRYPTO_ALG_TYPE_AHASH) {
-		ret = sa_init_ctx_info(&ctx->auth, data);
-		if (ret)
-			return ret;
-	} else if (sa_alg->type == CRYPTO_ALG_TYPE_AEAD) {
-		ret = sa_init_ctx_info(&ctx->enc, data);
-		if (ret)
-			return ret;
-		ret = sa_init_ctx_info(&ctx->dec, data);
-		if (ret) {
-			sa_free_ctx_info(&ctx->enc, data);
-			return ret;
-		}
-	} else if (sa_alg->type == CRYPTO_ALG_TYPE_ABLKCIPHER) {
 		ret = sa_init_ctx_info(&ctx->enc, data);
 		if (ret)
 			return ret;
@@ -829,27 +728,15 @@ static int sa_init_tfm(struct crypto_tfm *tfm)
 	}
 
 	dev_dbg(sa_ks2_dev, "%s(0x%p) sc-ids(0x%x(0x%x), 0x%x(0x%x))\n",
-			__func__, tfm, ctx->enc.sc_id, ctx->enc.sc_phys,
-			ctx->dec.sc_id, ctx->dec.sc_phys);
+		__func__, tfm, ctx->enc.sc_id, ctx->enc.sc_phys,
+		ctx->dec.sc_id, ctx->dec.sc_phys);
 	return 0;
 }
 
 /* Algorithm init */
-static int sa_cra_init_aead(struct crypto_tfm *tfm)
+static int sa_cra_init_aead(struct crypto_aead *tfm)
 {
-	return sa_init_tfm(tfm);
-}
-
-/* Algorithm init */
-static int sa_cra_init_ablkcipher(struct crypto_tfm *tfm)
-{
-	return sa_init_tfm(tfm);
-}
-
-/* Algorithm init */
-static int sa_cra_init_ahash(struct crypto_tfm *tfm)
-{
-	return sa_init_tfm(tfm);
+	return sa_init_tfm(crypto_aead_tfm(tfm));
 }
 
 /* Algorithm context teardown */
@@ -860,97 +747,75 @@ static void sa_exit_tfm(struct crypto_tfm *tfm)
 	struct keystone_crypto_data *data = dev_get_drvdata(sa_ks2_dev);
 
 	dev_dbg(sa_ks2_dev, "%s(0x%p) sc-ids(0x%x(0x%x), 0x%x(0x%x))\n",
-			__func__, tfm, ctx->enc.sc_id, ctx->enc.sc_phys,
-			ctx->dec.sc_id, ctx->dec.sc_phys);
+		__func__, tfm, ctx->enc.sc_id, ctx->enc.sc_phys,
+		ctx->dec.sc_id, ctx->dec.sc_phys);
 
 	if ((alg->cra_flags & CRYPTO_ALG_TYPE_MASK)
-			== CRYPTO_ALG_TYPE_AEAD) {
-		sa_free_ctx_info(&ctx->enc, data);
-		sa_free_ctx_info(&ctx->dec, data);
-	} else if ((alg->cra_flags & CRYPTO_ALG_TYPE_MASK)
-			== CRYPTO_ALG_TYPE_AHASH) {
-		sa_free_ctx_info(&ctx->auth, data);
-	} else if ((alg->cra_flags & CRYPTO_ALG_TYPE_MASK)
-			== CRYPTO_ALG_TYPE_ABLKCIPHER) {
+	    == CRYPTO_ALG_TYPE_AEAD) {
 		sa_free_ctx_info(&ctx->enc, data);
 		sa_free_ctx_info(&ctx->dec, data);
 	}
 }
 
+static void sa_exit_tfm_aead(struct crypto_aead *tfm)
+{
+	return sa_exit_tfm(crypto_aead_tfm(tfm));
+}
+
 /* AEAD algorithm configuration interface function */
 static int sa_aead_setkey(struct crypto_aead *authenc,
-		const u8 *key, unsigned int keylen)
+			  const u8 *key, unsigned int keylen)
 {
 	struct sa_tfm_ctx *ctx = crypto_aead_ctx(authenc);
-	unsigned int enckey_len, authkey_len, auth_size;
-	struct rtattr *rta = (struct rtattr *)key;
-	struct crypto_authenc_key_param *param;
-	struct sa_eng_info enc_eng, auth_eng;
+	struct crypto_authenc_keys keys;
+
+	const char *cra_name;
+	struct sa_eng_info *enc_eng, *auth_eng;
 	int ealg_id, aalg_id, cmdl_len;
 	struct sa_cmdl_cfg cfg;
-	u8 const *enc_key;
-	u8 const *auth_key;
-	const char *cra_name;
 
-	if (!RTA_OK(rta, keylen))
+	if (crypto_authenc_extractkeys(&keys, key, keylen) != 0)
 		goto badkey;
-	if (rta->rta_type != CRYPTO_AUTHENC_KEYA_PARAM)
-		goto badkey;
-	if (RTA_PAYLOAD(rta) < sizeof(*param))
-		goto badkey;
-
-	param = RTA_DATA(rta);
-	enckey_len = be32_to_cpu(param->enckeylen);
-
-	key += RTA_ALIGN(rta->rta_len);
-	keylen -= RTA_ALIGN(rta->rta_len);
-
-	if (keylen < enckey_len)
-		goto badkey;
-
-	authkey_len = keylen - enckey_len;
-	auth_size = crypto_aead_authsize(authenc);
-
-	enc_key = key + authkey_len;
-	auth_key = key;
 
 	cra_name = crypto_tfm_alg_name(crypto_aead_tfm(authenc));
 
 	sa_conv_calg_to_salg(cra_name, &ealg_id, &aalg_id);
-	sa_get_engine_info(ealg_id, &enc_eng);
-	sa_get_engine_info(aalg_id, &auth_eng);
+	enc_eng = sa_get_engine_info(ealg_id);
+	auth_eng = sa_get_engine_info(aalg_id);
 
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.enc1st = 1;
 	cfg.aalg = aalg_id;
-	cfg.enc_eng_id = enc_eng.eng_id;
-	cfg.auth_eng_id = auth_eng.eng_id;
+	cfg.enc_eng_id = enc_eng->eng_id;
+	cfg.auth_eng_id = auth_eng->eng_id;
 	cfg.iv_size = crypto_aead_ivsize(authenc);
-	cfg.akey = auth_key;
-	cfg.akey_len = authkey_len;
+	cfg.akey = keys.authkey;
+	cfg.akey_len = keys.authkeylen;
 
 	/* Setup Encryption Security Context & Command label template */
-	if (sa_init_sc(&ctx->enc, enc_key, enckey_len, auth_key,
-				authkey_len, cra_name, 1, &ctx->enc.epib[1]))
+	if (sa_init_sc(&ctx->enc, keys.enckey, keys.enckeylen,
+		       keys.authkey, keys.authkeylen,
+		       cra_name, 1, &ctx->enc.epib[1]))
 		goto badkey;
 
 	cmdl_len = sa_format_cmdl_gen(&cfg,
-				(u8 *)ctx->enc.cmdl, &ctx->enc.cmdl_upd_info);
+				      (u8 *)ctx->enc.cmdl,
+				      &ctx->enc.cmdl_upd_info);
 	if ((cmdl_len <= 0) || (cmdl_len > SA_MAX_CMDL_WORDS * sizeof(u32)))
 		goto badkey;
 
 	ctx->enc.cmdl_size = cmdl_len;
 
 	/* Setup Decryption Security Context & Command label template */
-	if (sa_init_sc(&ctx->dec, enc_key, enckey_len, auth_key,
-				authkey_len, cra_name, 0, &ctx->dec.epib[1]))
+	if (sa_init_sc(&ctx->dec, keys.enckey, keys.enckeylen,
+		       keys.authkey, keys.authkeylen,
+		       cra_name, 0, &ctx->dec.epib[1]))
 		goto badkey;
 
 	cfg.enc1st = 0;
-	cfg.enc_eng_id = enc_eng.eng_id;
-	cfg.auth_eng_id = auth_eng.eng_id;
-	cmdl_len = sa_format_cmdl_gen(&cfg,
-				      (u8 *)ctx->dec.cmdl,
+	cfg.enc_eng_id = enc_eng->eng_id;
+	cfg.auth_eng_id = auth_eng->eng_id;
+	cmdl_len = sa_format_cmdl_gen(&cfg, (u8 *)ctx->dec.cmdl,
 				      &ctx->dec.cmdl_upd_info);
 
 	if ((cmdl_len <= 0) || (cmdl_len > SA_MAX_CMDL_WORDS * sizeof(u32)))
@@ -965,16 +830,25 @@ badkey:
 	return -EINVAL;
 }
 
-/* AEAD algorithm configuration interface function */
-static int sa_aead_setauthsize(struct crypto_aead *tfm,
-				unsigned int auth_size)
-{
-	if (auth_size > crypto_aead_alg(tfm)->maxauthsize)
-		return -EINVAL;
-	return 0;
-}
-
-dma_addr_t
+/**
+ * sa_prepare_tx_desc() - prepare a chain of tx descriptors
+ * @pdata:	struct keystone_crypto_data pinter
+ * @_sg:	struct scatterlist source list
+ * @num_sg:	number of buffers in the _sg list
+ * @pslen:	length of protocol specific data
+ * @psdata:	pointer to the protocol specific data
+ * @epiblen:	EPIB length
+ * @epib:	pointer to EPIB (extended packet info block)
+ * @ctx:	struct sa_dma_req_ctx pointer
+ *
+ * For each buffer in the source _sg list the function gets a hardware
+ * descriptor from tx_pool and fills the buffer descriptor fields and maps the
+ * descriptor. For the first descriptor (packet descriptor) it also sets the
+ * psinfo and epib fields.
+ *
+ * Returns dma address of the first descripto on success, NULL otherwise.
+ */
+static dma_addr_t
 sa_prepare_tx_desc(struct keystone_crypto_data *pdata, struct scatterlist *_sg,
 		   int num_sg, u32 pslen, u32 *psdata,
 		   u32 epiblen, u32 *epib, struct sa_dma_req_ctx *ctx)
@@ -1001,14 +875,12 @@ sa_prepare_tx_desc(struct keystone_crypto_data *pdata, struct scatterlist *_sg,
 		hwdesc = knav_pool_desc_get(pdata->tx_pool);
 		if (IS_ERR_OR_NULL(hwdesc)) {
 			dev_dbg(dev, "out of tx pool desc\n");
-			/* TODO: we need to return all pooped descriptors */
 			return 0;
 		}
 
-		buflen = sg_dma_len(sg) & MASK(22);
-		orig_len = (pdata->tx_submit_qid << 28) | buflen;
+		buflen = sg_dma_len(sg) & KNAV_DMA_DESC_PKT_LEN_MASK;
+		orig_len = buflen;
 		packet_len += buflen;
-
 		if (nsg == 1) { /* extra fileds for packed descriptor */
 			for (out = hwdesc->epib, in = epib, i = 0;
 			     i < epiblen / sizeof(u32); i++)
@@ -1016,6 +888,8 @@ sa_prepare_tx_desc(struct keystone_crypto_data *pdata, struct scatterlist *_sg,
 			for (out = hwdesc->psdata, in = psdata, i = 0;
 			     i < pslen / sizeof(u32); i++)
 				*out++ = *in++;
+
+
 		}
 
 		hwdesc->desc_info    = packet_len;
@@ -1035,10 +909,9 @@ sa_prepare_tx_desc(struct keystone_crypto_data *pdata, struct scatterlist *_sg,
 		hwdesc->pad[2] = (u32)ctx;
 
 		next_desc = (u32)dma_addr;
-
 	}
 
-	return (unlikely(hwdesc == NULL)) ? 0 : hwdesc->pad[0];
+	return (unlikely(!hwdesc)) ? 0 : hwdesc->pad[0];
 }
 
 void sa_tx_completion_process(struct keystone_crypto_data *dev_data)
@@ -1077,31 +950,26 @@ void sa_tx_completion_process(struct keystone_crypto_data *dev_data)
 					KNAV_DMA_DESC_PKT_LEN_MASK;
 			}
 			calc_pkt_len += hwdesc->buff_len;
-			/* do we need to unmap buffer here, or will do it
-			 * later
-			 */
-
 			dma = hwdesc->next_desc;
 
 			knav_pool_desc_put(dev_data->tx_pool, hwdesc);
 		} while (dma);
 
+#ifdef DEBUG
 		if (pkt_len != calc_pkt_len)
 			pr_err("[%s] calculated packet length doesn't match %d/%d\n",
 			       __func__, calc_pkt_len, pkt_len);
+#endif
 
 		if ((pkt_len > 0) && ctx) {
-			dma_unmap_sg(&ctx->dev_data->pdev->dev, ctx->sg_tbl.sgl,
-				     ctx->sg_tbl.nents, DMA_TO_DEVICE);
+			dma_unmap_sg(&ctx->dev_data->pdev->dev, ctx->src,
+				     ctx->src_nents, DMA_TO_DEVICE);
 
 			if (likely(ctx->pkt)) {
-				atomic_add(ctx->sg_tbl.nents,
+				atomic_add(ctx->src_nents,
 					   &ctx->dev_data->tx_dma_desc_cnt);
 				atomic_inc(&ctx->dev_data->stats.tx_pkts);
 			}
-
-			if (likely(ctx->sg_tbl.sgl))
-				sg_free_table(&ctx->sg_tbl);
 		}
 
 		if (ctx)
@@ -1109,7 +977,26 @@ void sa_tx_completion_process(struct keystone_crypto_data *dev_data)
 	}
 }
 
-static void sa_rx_desc_process(struct keystone_crypto_data *dev_data,
+/**
+ * sa_rx_desc_process() - proccess descriptors related
+ *			  to one trasnsformation received from SA
+ *
+ * @dev_data:	struct keystone_crypto_data pointer
+ * @hwdesc:	array of pointers to descriptors
+ * @num:	number descriptors in the array
+ *
+ * From the first descriptor, which is a packer descriptor, the function
+ * retrieves all algorithm parameters including pointer to original request.
+ * If the transformation was an encryption, it copies calculated authentication
+ * tag to the destination list, otherwise compare received tag with calculated.
+ *
+ * After that it copies all buffers from hw descriptors to the destination list
+ * and call aead_request_complete() callback.
+ *
+ * At the end the function frees all buffers.
+ */
+static
+void sa_rx_desc_process(struct keystone_crypto_data *dev_data,
 			struct knav_dma_desc **hwdesc, int num)
 {
 	int			j;
@@ -1120,21 +1007,23 @@ static void sa_rx_desc_process(struct keystone_crypto_data *dev_data,
 	req_sub_type = hwdesc[0]->psdata[0] >> SA_REQ_SUBTYPE_SHIFT;
 
 	if (likely(alg_type == CRYPTO_ALG_TYPE_AEAD)) {
-		int auth_words, auth_size, iv_size, enc_len, enc_offset, i;
+		int auth_words, auth_size, enc_len, enc_offset, i;
 		struct aead_request *req;
 		struct crypto_aead *tfm;
 		int enc, err = 0;
+		unsigned int ivsize;
 
 		req = (struct aead_request *)hwdesc[0]->psdata[1];
 		tfm = crypto_aead_reqtfm(req);
 		auth_size = crypto_aead_authsize(tfm);
-		iv_size = crypto_aead_ivsize(tfm);
-		enc_offset = req->assoclen + iv_size;
+		ivsize = crypto_aead_ivsize(tfm);
 
 		if (req_sub_type == SA_REQ_SUBTYPE_ENC) {
-			enc_len = req->cryptlen;
+			enc_offset = req->assoclen + ivsize;
+			enc_len = req->cryptlen - ivsize;
 			enc = 1;
 		} else if (req_sub_type == SA_REQ_SUBTYPE_DEC) {
+			enc_offset = req->assoclen;
 			enc_len = req->cryptlen - auth_size;
 			enc = 0;
 		} else {
@@ -1143,48 +1032,33 @@ static void sa_rx_desc_process(struct keystone_crypto_data *dev_data,
 		}
 
 		/* NOTE: We receive the tag as host endian 32bit words */
-		auth_words = auth_size/sizeof(u32);
+		auth_words = auth_size / sizeof(u32);
 
-		for (i = 2; i < (auth_words + SA_NUM_PSDATA_CTX_WORDS); i++)
+		for (i = 2; i < (auth_words + SA_PSDATA_CTX_WORDS); i++)
 			hwdesc[0]->psdata[i] = htonl(hwdesc[0]->psdata[i]);
 
 		/* if encryption, copy the authentication tag */
 		if (enc) {
-			sa_scatterwalk_copy(
-				&(hwdesc[0]->psdata[SA_NUM_PSDATA_CTX_WORDS]),
-				req->dst, enc_len, auth_size, 1);
-#ifdef DEBUG
-			dev_info(sa_ks2_dev, "computed tag:\n");
-			print_hex_dump(KERN_CONT, "", DUMP_PREFIX_OFFSET,
-			16, 1, &(hwdesc[0]->psdata[SA_NUM_PSDATA_CTX_WORDS]),
-			auth_size, false);
-#endif
+			scatterwalk_copy(
+				&hwdesc[0]->psdata[SA_PSDATA_CTX_WORDS],
+				req->dst, enc_offset + enc_len, auth_size, 1);
 		} else  {
 			/* Verify the authentication tag */
 			u8 auth_tag[SA_MAX_AUTH_TAG_SZ];
 
-			sa_scatterwalk_copy(auth_tag, req->src, enc_len,
-					auth_size, 0);
+			scatterwalk_copy(auth_tag, req->src,
+					    enc_len + req->assoclen,
+					    auth_size, 0);
 
-#ifdef DEBUG
-			dev_info(sa_ks2_dev, "expected tag:\n");
-			print_hex_dump(KERN_CONT, "", DUMP_PREFIX_OFFSET,
-			16, 1, auth_tag, auth_size, false);
-			dev_info(sa_ks2_dev, "computed tag:\n");
-			print_hex_dump(KERN_CONT, "", DUMP_PREFIX_OFFSET,
-			16, 1, &(hwdesc[0]->psdata[SA_NUM_PSDATA_CTX_WORDS]),
-			auth_size, false);
-#endif
-
-			err = memcmp(&(hwdesc[0]->psdata[SA_NUM_PSDATA_CTX_WORDS]),
-					auth_tag, auth_size) ? -EBADMSG : 0;
+			err = memcmp(&hwdesc[0]->psdata[SA_PSDATA_CTX_WORDS],
+				     auth_tag, auth_size) ? -EBADMSG : 0;
 			if (unlikely(err))
 				goto aead_err;
 		}
 
 		/* Copy the encrypted/decrypted data */
-		if (unlikely(sa_hwdesc2sg_copy(hwdesc, req->dst,
-					       enc_offset, 0, enc_len, num)))
+		if (unlikely(sa_hwdesc2sg_copy(hwdesc, req->dst, enc_offset,
+					       enc_offset, enc_len, num)))
 			err = -EBADMSG;
 
 aead_err:
@@ -1196,13 +1070,23 @@ aead_err:
 		if (hwdesc[j]->orig_len == PAGE_SIZE) {
 			__free_page((struct page *)hwdesc[j]->pad[1]);
 			atomic_dec(&dev_data->rx_dma_page_cnt);
-		} else
+		} else {
 			kfree((void *)hwdesc[j]->pad[0]);
+		}
 	}
 
 	atomic_inc(&dev_data->stats.rx_pkts);
 }
 
+/**
+ * sa_rx_completion_process() - processes received from SA buffers
+ *
+ * @dev_data:	struct keystone_crypto_data pointer
+ *
+ * The function is called from rx tasklet. It retreives one or multiple
+ * chained hw descriptors and calls sa_rx_desc_process(). After that it
+ * returns all descriptors into the rx_pool.
+ */
 void sa_rx_completion_process(struct keystone_crypto_data *dev_data)
 {
 	struct knav_dma_desc	*hwdesc[MAX_SKB_FRAGS];
@@ -1226,8 +1110,9 @@ void sa_rx_completion_process(struct keystone_crypto_data *dev_data)
 		desc_num = 0;
 
 		do {
-			hwdesc[desc_num] = knav_pool_desc_unmap(dev_data->rx_pool, dma,
-						      sizeof(hwdesc));
+			hwdesc[desc_num] =
+				knav_pool_desc_unmap(dev_data->rx_pool, dma,
+						     sizeof(hwdesc));
 			if (!hwdesc[desc_num]) {
 				pr_err("failed to unmap descriptor 0x%08x\n",
 				       dma);
@@ -1242,7 +1127,7 @@ void sa_rx_completion_process(struct keystone_crypto_data *dev_data)
 			} else {
 				dma_unmap_single(sa_ks2_dev,
 						 hwdesc[desc_num]->orig_buff,
-						 dev_data->rx_buffer_sizes[0],
+						 SA_RX_BUF0_SIZE,
 						 DMA_FROM_DEVICE);
 			}
 
@@ -1258,39 +1143,53 @@ void sa_rx_completion_process(struct keystone_crypto_data *dev_data)
 			desc_num++;
 		} while (dma);
 
+#ifdef DEBUG
 		if (pkt_len != calc_pkt_len)
 			pr_err("[%s] calculated packet length doesn't match %d/%d\n",
 			       __func__, calc_pkt_len, pkt_len);
+#endif
 
 		/* retrieve data and copy it to the destination sg list */
 		sa_rx_desc_process(dev_data, hwdesc, desc_num);
 
 		/* return descriptor to the pool */
 		for (j = 0; j < desc_num; j++)
-			knav_pool_desc_put(dev_data->tx_pool, hwdesc[j]);
-
-		/* increment rx packet counter */
+			knav_pool_desc_put(dev_data->rx_pool, hwdesc[j]);
 	}
 }
 
-static int sa_aead_perform(struct aead_request *req, u8 *iv, int enc)
+/**
+ * sa_aead_perform() - perform AEAD transformation
+ * @req:	struct aead_request pointer
+ * @iv:		initial vector
+ * enc:		boolean flag true for encryption, false for decryption
+ *
+ * This function prepare
+ *
+ * 1) checks whether the driver has enought buffers to receive transformed
+ *    data.
+ * 2) allocates request context and fills appropriate fields in it.
+ * 3) maps source list
+ * 4) prepare tx dma desctiprors and submits them to the SA queue.
+ *
+ * Return: -EINPROGRESS on success, appropriate error code
+ */
+static int sa_aead_perform(struct aead_request *req, u8 *iv, bool enc)
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct sa_tfm_ctx *ctx = crypto_aead_ctx(tfm);
 	struct sa_ctx_info *sa_ctx = enc ? &ctx->enc : &ctx->dec;
 	dma_addr_t desc_dma_addr;
 	struct keystone_crypto_data *pdata = dev_get_drvdata(sa_ks2_dev);
-	unsigned ivsize = crypto_aead_ivsize(tfm);
-	u8 enc_offset = req->assoclen + ivsize;
 	struct sa_dma_req_ctx *req_ctx = NULL;
+	unsigned int ivsize = crypto_aead_ivsize(tfm);
+	u8 enc_offset;
 	int sg_nents;
-	int assoc_sgents, src_sgents;
 	int psdata_offset, ret = 0;
 	u8 auth_offset = 0;
 	u8 *auth_iv = NULL;
 	u8 *aad = NULL;
 	u8 aad_len = 0;
-	int sg_idx = 0;
 	u16 enc_len;
 	u16 auth_len;
 	u32 req_type;
@@ -1299,22 +1198,20 @@ static int sa_aead_perform(struct aead_request *req, u8 *iv, int enc)
 	gfp_t flags = req->base.flags & CRYPTO_TFM_REQ_MAY_SLEEP ?
 			GFP_KERNEL : GFP_ATOMIC;
 
-	enc_len = req->cryptlen;
-
-	/* req->cryptlen includes authsize when decrypting */
-	if (!enc)
-		enc_len -= crypto_aead_authsize(tfm);
-
-	auth_len = req->assoclen + ivsize + enc_len;
+	if (enc) {
+		iv = (u8 *)(sg_virt(req->src) + req->assoclen);
+		enc_offset = req->assoclen + ivsize;
+		enc_len = req->cryptlen - ivsize;
+		auth_len = req->assoclen + req->cryptlen;
+	} else {
+		enc_offset = req->assoclen;
+		enc_len = req->cryptlen - crypto_aead_authsize(tfm);
+		auth_len = req->assoclen + req->cryptlen -
+			crypto_aead_authsize(tfm);
+	}
 
 	/* Allocate descriptor & submit packet */
-	assoc_sgents = sg_count(req->assoc, req->assoclen);
-	sg_nents = assoc_sgents;
-	src_sgents = sg_count(req->src, enc_len);
-	sg_nents += src_sgents;
-
-	if (likely(ivsize))
-		sg_nents += 1;
+	sg_nents = sg_count(req->src, enc_len);
 
 	if (unlikely(atomic_sub_return(sg_nents, &pdata->tx_dma_desc_cnt)
 		     < 0)) {
@@ -1322,10 +1219,10 @@ static int sa_aead_perform(struct aead_request *req, u8 *iv, int enc)
 		goto err_0;
 	}
 
-	n_bufs = auth_len - pdata->rx_buffer_sizes[0];
+	n_bufs = auth_len - SA_RX_BUF0_SIZE;
 
 	n_bufs = (n_bufs <= 0) ? 0 :
-		DIV_ROUND_UP(n_bufs, pdata->rx_buffer_sizes[1]);
+		DIV_ROUND_UP(n_bufs, PAGE_SIZE);
 
 	if (unlikely(atomic_read(&pdata->rx_dma_page_cnt) < n_bufs)) {
 		ret = -EBUSY;
@@ -1334,24 +1231,20 @@ static int sa_aead_perform(struct aead_request *req, u8 *iv, int enc)
 
 	req_ctx = kmem_cache_alloc(pdata->dma_req_ctx_cache, flags);
 
-	if (unlikely(req_ctx == NULL)) {
+	if (unlikely(!req_ctx)) {
 		ret = -ENOMEM;
 		goto err_0;
-	}
-
-	if (unlikely(sg_alloc_table(&req_ctx->sg_tbl, sg_nents, flags))) {
-		ret = -ENOMEM;
-		goto err_1;
 	}
 
 	memcpy(req_ctx->cmdl, sa_ctx->cmdl, sa_ctx->cmdl_size);
 	/* Update Command Label */
 	sa_update_cmdl(sa_ks2_dev, enc_offset, enc_len,
-			iv, auth_offset, auth_len,
-			auth_iv, aad_len, aad,
-			&sa_ctx->cmdl_upd_info, req_ctx->cmdl);
+		       iv, auth_offset, auth_len,
+		       auth_iv, aad_len, aad,
+		       &sa_ctx->cmdl_upd_info, req_ctx->cmdl);
 
-	/* Last 2 words in PSDATA will have the crypto alg type &
+	/*
+	 * Last 2 words in PSDATA will have the crypto alg type &
 	 * crypto request pointer
 	 */
 	req_type = CRYPTO_ALG_TYPE_AEAD;
@@ -1359,38 +1252,17 @@ static int sa_aead_perform(struct aead_request *req, u8 *iv, int enc)
 		req_type |= (SA_REQ_SUBTYPE_ENC << SA_REQ_SUBTYPE_SHIFT);
 	else
 		req_type |= (SA_REQ_SUBTYPE_DEC << SA_REQ_SUBTYPE_SHIFT);
-	psdata_offset = sa_ctx->cmdl_size/sizeof(u32);
-	/* Append the type of request */
+
+	psdata_offset = sa_ctx->cmdl_size / sizeof(u32);
 	req_ctx->cmdl[psdata_offset++] = req_type;
-	/* Append the pointer to request */
 	req_ctx->cmdl[psdata_offset] = (u32)req;
 
-#ifdef DEBUG
-	dev_info(sa_ks2_dev, "cmdl:\n");
-	print_hex_dump(KERN_CONT, "", DUMP_PREFIX_OFFSET,
-			16, 4, req_ctx->cmdl, sa_ctx->cmdl_size + 8, false);
-#endif
-	/* clone the assoc sg list */
-	if (likely(req->assoclen)) {
-		sa_clone_sg(req->assoc, &req_ctx->sg_tbl.sgl[sg_idx],
-				req->assoclen);
-		sg_idx += assoc_sgents;
-	}
-
-	if (likely(ivsize))
-		sg_set_buf(&req_ctx->sg_tbl.sgl[sg_idx++], iv, ivsize);
-
-	/* clone the src sg list */
-	if (likely(enc_len)) {
-		sa_clone_sg(req->src, &req_ctx->sg_tbl.sgl[sg_idx], enc_len);
-		sg_idx += src_sgents;
-	}
-
 	/* map the packet */
-	req_ctx->sg_tbl.nents = dma_map_sg(sa_ks2_dev, req_ctx->sg_tbl.sgl,
-					sg_nents, DMA_TO_DEVICE);
+	req_ctx->src = req->src;
+	req_ctx->src_nents = dma_map_sg(sa_ks2_dev, req_ctx->src,
+					   sg_nents, DMA_TO_DEVICE);
 
-	if (unlikely(req_ctx->sg_tbl.nents != sg_nents)) {
+	if (unlikely(req_ctx->src_nents != sg_nents)) {
 		dev_warn_ratelimited(sa_ks2_dev, "failed to map tx pkt\n");
 		ret = -EIO;
 		goto err;
@@ -1399,14 +1271,10 @@ static int sa_aead_perform(struct aead_request *req, u8 *iv, int enc)
 	req_ctx->dev_data = pdata;
 	req_ctx->pkt = true;
 
-/*
- * here we have the req_ctx->sg_tbl with a chain of packets ready to go.
- * Let's start filling HW descriptors and submit packet to the queue
- */
-	desc_dma_addr = sa_prepare_tx_desc(pdata, req_ctx->sg_tbl.sgl,
+	desc_dma_addr = sa_prepare_tx_desc(pdata, req_ctx->src,
 					   sg_nents,
 					   (sa_ctx->cmdl_size +
-					    (SA_NUM_PSDATA_CTX_WORDS *
+					    (SA_PSDATA_CTX_WORDS *
 					     sizeof(u32))),
 					   req_ctx->cmdl,
 					   sizeof(sa_ctx->epib),
@@ -1424,249 +1292,129 @@ static int sa_aead_perform(struct aead_request *req, u8 *iv, int enc)
 	return -EINPROGRESS;
 
 err:
-	if (req_ctx && req_ctx->sg_tbl.sgl)
-		sg_free_table(&req_ctx->sg_tbl);
-err_1:
 	if (req_ctx)
 		kmem_cache_free(pdata->dma_req_ctx_cache, req_ctx);
 err_0:
-	atomic_add((sg_nents - SA_NUM_DMA_META_ELEMS), &pdata->tx_dma_desc_cnt);
-	atomic_inc(&pdata->stats.tx_dropped);
+	atomic_add(sg_nents, &pdata->tx_dma_desc_cnt);
 	return ret;
 }
 
 /* AEAD algorithm encrypt interface function */
 static int sa_aead_encrypt(struct aead_request *req)
 {
-	return sa_aead_perform(req, req->iv, 1);
+	return sa_aead_perform(req, req->iv, true);
 }
 
 /* AEAD algorithm decrypt interface function */
 static int sa_aead_decrypt(struct aead_request *req)
 {
-	return sa_aead_perform(req, req->iv, 0);
-}
-
-/* AEAD algorithm givencrypt interface function */
-static int sa_aead_givencrypt(struct aead_givcrypt_request *req)
-{
-	struct crypto_aead *tfm = aead_givcrypt_reqtfm(req);
-
-	get_random_bytes(req->giv, crypto_aead_ivsize(tfm));
-	return sa_aead_perform(&req->areq, req->giv, 1);
-}
-
-static int sa_ablkcipher_setkey(struct crypto_ablkcipher *cipher,
-			     const u8 *key, unsigned int keylen)
-{
-	return 0;
-}
-
-static int sa_ablkcipher_encrypt(struct ablkcipher_request *areq)
-{
-	return 0;
-}
-
-static int sa_ablkcipher_decrypt(struct ablkcipher_request *areq)
-{
-	return 0;
-}
-
-static int sa_ahash_init(struct ahash_request *areq)
-{
-	return 0;
-}
-
-static int sa_ahash_update(struct ahash_request *areq)
-{
-	return 0;
-}
-
-static int sa_ahash_final(struct ahash_request *areq)
-{
-	return 0;
-}
-
-static int sa_ahash_finup(struct ahash_request *areq)
-{
-	return 0;
-}
-
-static int sa_ahash_digest(struct ahash_request *areq)
-{
-	return 0;
-}
-
-static int sa_ahash_setkey(struct crypto_ahash *tfm, const u8 *key,
-			unsigned int keylen)
-{
-	return 0;
+	return sa_aead_perform(req, req->iv, false);
 }
 
 static struct sa_alg_tmpl sa_algs[] = {
 	/* AEAD algorithms */
 	{	.type = CRYPTO_ALG_TYPE_AEAD,
-		.alg.crypto = {
-			.cra_name = "authenc(hmac(sha1),cbc(aes))",
-			.cra_driver_name =
-				"authenc-hmac-sha1-cbc-aes-keystone-sa",
-			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_aead = {
-				.geniv = "custom",
-				.ivsize = AES_BLOCK_SIZE,
-				.maxauthsize = SHA1_DIGEST_SIZE,
-			}
+		.alg.aead = {
+			.base = {
+				.cra_name = "authenc(hmac(sha1),cbc(aes))",
+				.cra_driver_name =
+					"authenc(hmac(sha1),cbc(aes))-keystone-sa",
+				.cra_blocksize = AES_BLOCK_SIZE,
+				.cra_flags = CRYPTO_ALG_TYPE_AEAD |
+					CRYPTO_ALG_KERN_DRIVER_ONLY |
+					CRYPTO_ALG_ASYNC,
+				.cra_ctxsize = sizeof(struct sa_tfm_ctx),
+				.cra_module = THIS_MODULE,
+				.cra_alignmask = 0,
+				.cra_priority = 3000,
+			},
+			.ivsize = AES_BLOCK_SIZE,
+			.maxauthsize = SHA1_DIGEST_SIZE,
+
+			.init = sa_cra_init_aead,
+			.exit = sa_exit_tfm_aead,
+			.setkey	= sa_aead_setkey,
+			.encrypt = sa_aead_encrypt,
+			.decrypt = sa_aead_decrypt,
 		}
 	},
 	{	.type = CRYPTO_ALG_TYPE_AEAD,
-		.alg.crypto = {
-			.cra_name = "authenc(hmac(sha1),cbc(des3_ede))",
-			.cra_driver_name =
-				"authenc-hmac-sha1-cbc-3des-keystone-sa",
-			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_aead = {
-				.geniv = "custom",
-				.ivsize = DES3_EDE_BLOCK_SIZE,
-				.maxauthsize = SHA1_DIGEST_SIZE,
-			}
+		.alg.aead = {
+			.base = {
+				.cra_name = "authenc(hmac(sha1),cbc(des3_ede))",
+				.cra_driver_name =
+					"authenc(hmac(sha1),cbc(des3_ede))-keystone-sa",
+				.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+				.cra_flags = CRYPTO_ALG_TYPE_AEAD |
+					CRYPTO_ALG_KERN_DRIVER_ONLY |
+					CRYPTO_ALG_ASYNC,
+				.cra_ctxsize = sizeof(struct sa_tfm_ctx),
+				.cra_module = THIS_MODULE,
+				.cra_alignmask = 0,
+				.cra_priority = 3000,
+			},
+			.ivsize = DES3_EDE_BLOCK_SIZE,
+			.maxauthsize = SHA1_DIGEST_SIZE,
+			.init = sa_cra_init_aead,
+			.exit = sa_exit_tfm_aead,
+			.setkey	= sa_aead_setkey,
+			.encrypt = sa_aead_encrypt,
+			.decrypt = sa_aead_decrypt,
 		}
 	},
 	{       .type = CRYPTO_ALG_TYPE_AEAD,
-		.alg.crypto = {
-			.cra_name = "authenc(xcbc(aes),cbc(aes))",
-			.cra_driver_name =
-				"authenc-aes-xcbc-mac-cbc-aes-keystone-sa",
-			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_aead = {
-				.geniv = "custom",
-				.ivsize = AES_BLOCK_SIZE,
-				.maxauthsize = AES_XCBC_DIGEST_SIZE,
-			}
-		}
-	},
-	{	.type = CRYPTO_ALG_TYPE_AEAD,
-		.alg.crypto = {
-			.cra_name = "authenc(xcbc(aes),cbc(des3_ede))",
-			.cra_driver_name =
-				"authenc-aes-xcbc-mac-cbc-3des-keystone-sa",
-			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_aead = {
-				.geniv = "custom",
-				.ivsize = DES3_EDE_BLOCK_SIZE,
-				.maxauthsize = AES_XCBC_DIGEST_SIZE,
-			}
-		}
-	},
-	{	.type = CRYPTO_ALG_TYPE_AEAD,
-		.alg.crypto = {
-			.cra_name = "authenc(hmac(sha1),ecb(cipher_null))",
-			.cra_driver_name =
-				"authenc-hmac-sha1-cipher_null-keystone-sa",
-			.cra_blocksize = NULL_BLOCK_SIZE,
-			.cra_aead = {
-				.geniv = "custom",
-				.ivsize = NULL_IV_SIZE,
-				.maxauthsize = SHA1_DIGEST_SIZE,
-			}
-		}
-	},
-
-#ifdef TODO
-	{	.type = CRYPTO_ALG_TYPE_AEAD,
-		.alg.crypto = {
-			.cra_name = "authenc(hmac(md5),cbc(aes))",
-			.cra_driver_name =
-				"authenc-hmac-md5-cbc-aes-keystone-sa",
-			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_aead = {
-				.geniv = "custom",
-				.ivsize = AES_BLOCK_SIZE,
-				.maxauthsize = MD5_DIGEST_SIZE,
-			}
-		}
-	},
-	{	.type = CRYPTO_ALG_TYPE_AEAD,
-		.alg.crypto = {
-			.cra_name = "authenc(hmac(md5),cbc(des3_ede))",
-			.cra_driver_name =
-				"authenc-hmac-md5-cbc-3des-keystone-sa",
-			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_aead = {
-				.geniv = "custom",
-				.ivsize = DES3_EDE_BLOCK_SIZE,
-				.maxauthsize = MD5_DIGEST_SIZE,
-			}
-		}
-	},
-	/* ABLKCIPHER algorithms. */
-	{	.type = CRYPTO_ALG_TYPE_ABLKCIPHER,
-		.alg.crypto = {
-			.cra_name = "cbc(aes)",
-			.cra_driver_name = "cbc-aes-keystone-sa",
-			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_ablkcipher = {
-				.geniv = "custom",
-				.min_keysize = AES_MIN_KEY_SIZE,
-				.max_keysize = AES_MAX_KEY_SIZE,
-				.ivsize = AES_BLOCK_SIZE,
-			}
-		}
-	},
-	{	.type = CRYPTO_ALG_TYPE_ABLKCIPHER,
-		.alg.crypto = {
-			.cra_name = "cbc(des3_ede)",
-			.cra_driver_name = "cbc-3des-keystone-sa",
-			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_ablkcipher = {
-				.geniv = "custom",
-				.min_keysize = DES3_EDE_KEY_SIZE,
-				.max_keysize = DES3_EDE_KEY_SIZE,
-				.ivsize = DES3_EDE_BLOCK_SIZE,
-			}
-		}
-	},
-	/* AHASH algorithms. */
-	{	.type = CRYPTO_ALG_TYPE_AHASH,
-		.alg.hash = {
-			.halg.digestsize = AES_XCBC_DIGEST_SIZE,
-			.halg.base = {
-				.cra_name = "xcbc(aes)",
+		.alg.aead = {
+			.base = {
+				.cra_name = "authenc(xcbc(aes),cbc(aes))",
 				.cra_driver_name =
-					"aes-xcbc-mac-keystone-sa",
-				.cra_blocksize = SHA224_BLOCK_SIZE,
-			}
+					"authenc(xcbc(aes),cbc(aes))-keystone-sa",
+				.cra_blocksize = AES_BLOCK_SIZE,
+				.cra_flags = CRYPTO_ALG_TYPE_AEAD |
+					CRYPTO_ALG_KERN_DRIVER_ONLY |
+					CRYPTO_ALG_ASYNC,
+				.cra_ctxsize = sizeof(struct sa_tfm_ctx),
+				.cra_module = THIS_MODULE,
+				.cra_alignmask = 0,
+				.cra_priority = 3000,
+			},
+			.ivsize = AES_BLOCK_SIZE,
+			.maxauthsize = AES_XCBC_DIGEST_SIZE,
+			.init = sa_cra_init_aead,
+			.exit = sa_exit_tfm_aead,
+			.setkey	= sa_aead_setkey,
+			.encrypt = sa_aead_encrypt,
+			.decrypt = sa_aead_decrypt,
 		}
 	},
-	{	.type = CRYPTO_ALG_TYPE_AHASH,
-		.alg.hash = {
-			.halg.digestsize = MD5_DIGEST_SIZE,
-			.halg.base = {
-				.cra_name = "hmac(md5)",
+	{	.type = CRYPTO_ALG_TYPE_AEAD,
+		.alg.aead = {
+			.base = {
+				.cra_name = "authenc(xcbc(aes),cbc(des3_ede))",
 				.cra_driver_name =
-					"hmac-md5-keystone-sa",
-				.cra_blocksize = MD5_BLOCK_SIZE,
-			}
+					"authenc(xcbc(aes),cbc(des3_ede))-keystone-sa",
+				.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+				.cra_flags = CRYPTO_ALG_TYPE_AEAD |
+					CRYPTO_ALG_KERN_DRIVER_ONLY |
+					CRYPTO_ALG_ASYNC,
+				.cra_ctxsize = sizeof(struct sa_tfm_ctx),
+				.cra_module = THIS_MODULE,
+				.cra_alignmask = 0,
+				.cra_priority = 3000,
+			},
+			.ivsize = DES3_EDE_BLOCK_SIZE,
+			.maxauthsize = AES_XCBC_DIGEST_SIZE,
+			.init = sa_cra_init_aead,
+			.exit = sa_exit_tfm_aead,
+			.setkey	= sa_aead_setkey,
+			.encrypt = sa_aead_encrypt,
+			.decrypt = sa_aead_decrypt,
 		}
 	},
-	{	.type = CRYPTO_ALG_TYPE_AHASH,
-		.alg.hash = {
-			.halg.digestsize = SHA1_DIGEST_SIZE,
-			.halg.base = {
-				.cra_name = "hmac(sha1)",
-				.cra_driver_name =
-					"hmac-sha1-keystone-sa",
-				.cra_blocksize = SHA1_BLOCK_SIZE,
-			}
-		}
-	}
-#endif
 };
 
 /* Register the algorithms in crypto framework */
 void sa_register_algos(const struct device *dev)
 {
-	struct crypto_alg *cra;
-	struct ahash_alg *hash = NULL;
 	char *alg_name;
 	u32 type;
 	int i, err, num_algs = ARRAY_SIZE(sa_algs);
@@ -1674,102 +1422,42 @@ void sa_register_algos(const struct device *dev)
 	for (i = 0; i < num_algs; i++) {
 		type = sa_algs[i].type;
 		if (type == CRYPTO_ALG_TYPE_AEAD) {
-			cra = &sa_algs[i].alg.crypto;
-			alg_name = cra->cra_name;
-			if (snprintf(cra->cra_driver_name, CRYPTO_MAX_ALG_NAME,
-			"%s-keystone-sa", alg_name) >= CRYPTO_MAX_ALG_NAME) {
-				continue;
-			}
-			cra->cra_type = &crypto_aead_type;
-			cra->cra_flags = CRYPTO_ALG_TYPE_AEAD |
-					CRYPTO_ALG_KERN_DRIVER_ONLY |
-					CRYPTO_ALG_ASYNC;
-			cra->cra_aead.setkey = sa_aead_setkey;
-			cra->cra_aead.setauthsize = sa_aead_setauthsize;
-			cra->cra_aead.encrypt = sa_aead_encrypt;
-			cra->cra_aead.decrypt = sa_aead_decrypt;
-			cra->cra_aead.givencrypt = sa_aead_givencrypt;
-			cra->cra_init = sa_cra_init_aead;
-		} else if (type == CRYPTO_ALG_TYPE_ABLKCIPHER) {
-			cra = &sa_algs[i].alg.crypto;
-			alg_name = cra->cra_name;
-			if (snprintf(cra->cra_driver_name, CRYPTO_MAX_ALG_NAME,
-			"%s-keystone-sa", alg_name) >= CRYPTO_MAX_ALG_NAME) {
-				continue;
-			}
-			cra->cra_type = &crypto_ablkcipher_type;
-			cra->cra_flags = CRYPTO_ALG_TYPE_ABLKCIPHER |
-					CRYPTO_ALG_KERN_DRIVER_ONLY |
-					CRYPTO_ALG_ASYNC;
-			cra->cra_ablkcipher.setkey = sa_ablkcipher_setkey;
-			cra->cra_ablkcipher.encrypt = sa_ablkcipher_encrypt;
-			cra->cra_ablkcipher.decrypt = sa_ablkcipher_decrypt;
-			cra->cra_init = sa_cra_init_ablkcipher;
-		} else if (type == CRYPTO_ALG_TYPE_AHASH) {
-			hash = &sa_algs[i].alg.hash;
-			alg_name = hash->halg.base.cra_name;
-			if (snprintf(hash->halg.base.cra_driver_name,
-				CRYPTO_MAX_ALG_NAME, "%s-keystone-sa",
-				alg_name) >= CRYPTO_MAX_ALG_NAME) {
-				continue;
-			}
-			hash->init = sa_ahash_init;
-			hash->update = sa_ahash_update;
-			hash->final = sa_ahash_final;
-			hash->finup = sa_ahash_finup;
-			hash->digest = sa_ahash_digest;
-			hash->setkey = sa_ahash_setkey;
-			cra = &hash->halg.base;
-			cra->cra_flags = CRYPTO_ALG_TYPE_AHASH |
-						CRYPTO_ALG_KERN_DRIVER_ONLY |
-						CRYPTO_ALG_ASYNC;
-			cra->cra_type = &crypto_ahash_type;
-			cra->cra_init = sa_cra_init_ahash;
+			alg_name = sa_algs[i].alg.aead.base.cra_name;
+			err = crypto_register_aead(&sa_algs[i].alg.aead);
 		} else {
 			dev_err(dev,
-				"un-supported crypto algorithm (%d)", type);
+				"un-supported crypto algorithm (%d)",
+				sa_algs[i].type);
 			continue;
 		}
-
-		cra->cra_ctxsize = sizeof(struct sa_tfm_ctx);
-		cra->cra_module = THIS_MODULE;
-		cra->cra_alignmask = 0;
-		cra->cra_priority = 3000;
-		cra->cra_exit = sa_exit_tfm;
-
-		if (type == CRYPTO_ALG_TYPE_AHASH)
-			err = crypto_register_ahash(hash);
-		else
-			err = crypto_register_alg(cra);
 
 		if (err)
 			dev_err(dev, "Failed to register '%s'\n", alg_name);
 		else
-			sa_algs[i].registered = 1;
+			sa_algs[i].registered = true;
 	}
 }
 
 /* un-register the algorithms from crypto framework */
 void sa_unregister_algos(const struct device *dev)
 {
-	u32 type;
 	char *alg_name;
 	int err = 0, i, num_algs = ARRAY_SIZE(sa_algs);
 
 	for (i = 0; i < num_algs; i++) {
-		type = sa_algs[i].type;
-		if ((type == CRYPTO_ALG_TYPE_AHASH) &&
-				(sa_algs[i].registered)) {
-			alg_name = sa_algs[i].alg.hash.halg.base.cra_name;
-			err = crypto_unregister_ahash(&sa_algs[i].alg.hash);
-		} else if (sa_algs[i].registered) {
-			alg_name = sa_algs[i].alg.crypto.cra_name;
-			err = crypto_unregister_alg(&sa_algs[i].alg.crypto);
+		if (sa_algs[i].registered) {
+			if (sa_algs[i].type == CRYPTO_ALG_TYPE_AEAD) {
+				alg_name = sa_algs[i].alg.aead.base.cra_name;
+				crypto_unregister_aead(&sa_algs[i].alg.aead);
+				err = 0;
+			} else {
+				alg_name = sa_algs[i].alg.crypto.cra_name;
+				err = crypto_unregister_alg(&sa_algs[i].alg.crypto);
+			}
+			sa_algs[i].registered = false;
 		}
 
 		if (err)
 			dev_err(dev, "Failed to unregister '%s'", alg_name);
 	}
 }
-
-

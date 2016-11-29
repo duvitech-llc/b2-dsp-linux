@@ -441,9 +441,18 @@ static int fill(struct tcm_area *area, struct page **pages,
 	struct dmm_txn *txn;
 
 	/*
-	 * XXX async wait doesn't work, as it does not handle timeout errors
-	 * properly
+	 * FIXME
+	 *
+	 * Asynchronous fill does not work reliably, as the driver does not
+	 * handle errors in the async code paths. The fill operation may
+	 * silently fail, leading to leaking DMM engines, which may eventually
+	 * lead to deadlock if we run out of DMM engines.
+	 *
+	 * For now, always set 'wait' so that we only use sync fills. Async
+	 * fills should be fixed, or alternatively we could decide to only
+	 * support sync fills and so the whole async code path could be removed.
 	 */
+
 	wait = true;
 
 	txn = dmm_txn_init(omap_dmm, area->tcm);
@@ -787,7 +796,9 @@ static int omap_dmm_probe(struct platform_device *dev)
 
 	if (omap_dmm->dmm_workaround) {
 		int r;
+
 		r = dmm_workaround_init(omap_dmm);
+
 		if (r) {
 			omap_dmm->dmm_workaround = false;
 			dev_err(&dev->dev, "failed to initialize work-around, WA not used\n");
@@ -1195,4 +1206,3 @@ struct platform_driver omap_dmm_driver = {
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Andy Gross <andy.gross@ti.com>");
 MODULE_DESCRIPTION("OMAP DMM/Tiler Driver");
-MODULE_ALIAS("platform:" DMM_DRIVER_NAME);

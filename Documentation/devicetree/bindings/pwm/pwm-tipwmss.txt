@@ -38,9 +38,7 @@ epwmss0: epwmss@4843e000 { /* On DRA7xx */
 	ti,hwmods = "epwmss0";
 	#address-cells = <1>;
 	#size-cells = <1>;
-	ranges = <0x4843e100  0x4843e100 0x80	/* ECAP */
-		  0x4843e180  0x4843e180 0x80	/* EQEP */
-		  0x4843e200  0x4843e200 0x80>; /* EHRPWM */
+	ranges;
 
 	/* child nodes go here */
 };

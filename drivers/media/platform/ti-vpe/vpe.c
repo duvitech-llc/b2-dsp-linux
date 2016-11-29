@@ -40,7 +40,7 @@
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mem2mem.h>
-#include <media/videobuf2-core.h>
+#include <media/videobuf2-v4l2.h>
 #include <media/videobuf2-dma-contig.h>
 
 #include "vpdma.h"
@@ -336,10 +336,10 @@ struct vpe_q_data {
 };
 
 /* vpe_q_data flag bits */
-#define	Q_DATA_FRAME_1D			(1 << 0)
-#define	Q_DATA_MODE_TILED		(1 << 1)
-#define	Q_DATA_INTERLACED_ALTERNATE	(1 << 2)
-#define	Q_DATA_INTERLACED_SEQ_TB	(1 << 3)
+#define	Q_DATA_FRAME_1D			BIT(0)
+#define	Q_DATA_MODE_TILED		BIT(1)
+#define	Q_DATA_INTERLACED_ALTERNATE	BIT(2)
+#define	Q_DATA_INTERLACED_SEQ_TB	BIT(3)
 
 #define Q_IS_INTERLACED		(Q_DATA_INTERLACED_ALTERNATE | \
 				Q_DATA_INTERLACED_SEQ_TB)
@@ -405,8 +405,8 @@ struct vpe_ctx {
 	unsigned int		bufs_completed;		/* bufs done in this batch */
 
 	struct vpe_q_data	q_data[2];		/* src & dst queue data */
-	struct vb2_buffer	*src_vbs[VPE_MAX_SRC_BUFS];
-	struct vb2_buffer	*dst_vb;
+	struct vb2_v4l2_buffer	*src_vbs[VPE_MAX_SRC_BUFS];
+	struct vb2_v4l2_buffer	*dst_vb;
 
 	dma_addr_t		mv_buf_dma[2];		/* dma addrs of motion vector in/out bufs */
 	void			*mv_buf[2];		/* virtual addrs of motion vector bufs */
@@ -522,7 +522,7 @@ static inline dma_addr_t vb2_dma_addr_plus_data_offset(struct vb2_buffer *vb,
 	unsigned int plane_no)
 {
 	return vb2_dma_contig_plane_dma_addr(vb, plane_no) +
-		vb->v4l2_planes[plane_no].data_offset;
+		vb->planes[plane_no].data_offset;
 }
 
 /*
@@ -614,7 +614,8 @@ static void free_vbs(struct vpe_ctx *ctx)
 	spin_lock_irqsave(&dev->lock, flags);
 	if (ctx->src_vbs[2]) {
 		v4l2_m2m_buf_done(ctx->src_vbs[2], VB2_BUF_STATE_DONE);
-		v4l2_m2m_buf_done(ctx->src_vbs[1], VB2_BUF_STATE_DONE);
+		if (ctx->src_vbs[1] && (ctx->src_vbs[1] != ctx->src_vbs[2]))
+			v4l2_m2m_buf_done(ctx->src_vbs[1], VB2_BUF_STATE_DONE);
 		ctx->src_vbs[2] = NULL;
 		ctx->src_vbs[1] = NULL;
 	}
@@ -1043,7 +1044,7 @@ static void add_out_dtd(struct vpe_ctx *ctx, int port)
 {
 	struct vpe_q_data *q_data = &ctx->q_data[Q_DATA_DST];
 	const struct vpe_port_data *p_data = &port_data[port];
-	struct vb2_buffer *vb = ctx->dst_vb;
+	struct vb2_buffer *vb = &ctx->dst_vb->vb2_buf;
 	struct vpe_fmt *fmt = q_data->fmt;
 	const struct vpdma_data_format *vpdma_fmt;
 	int mv_buf_selector = !ctx->src_mv_buf_selector;
@@ -1082,11 +1083,12 @@ static void add_in_dtd(struct vpe_ctx *ctx, int port)
 {
 	struct vpe_q_data *q_data = &ctx->q_data[Q_DATA_SRC];
 	const struct vpe_port_data *p_data = &port_data[port];
-	struct vb2_buffer *vb = ctx->src_vbs[p_data->vb_index];
+	struct vb2_buffer *vb = &ctx->src_vbs[p_data->vb_index]->vb2_buf;
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vpe_fmt *fmt = q_data->fmt;
 	const struct vpdma_data_format *vpdma_fmt;
 	int mv_buf_selector = ctx->src_mv_buf_selector;
-	int field = vb->v4l2_buf.field == V4L2_FIELD_BOTTOM;
+	int field = vbuf->field == V4L2_FIELD_BOTTOM;
 	int frame_width, frame_height;
 	dma_addr_t dma_addr;
 	u32 flags = 0;
@@ -1111,8 +1113,10 @@ static void add_in_dtd(struct vpe_ctx *ctx, int port)
 			field = (p_data->vb_index + (ctx->sequence % 2)) % 2;
 
 			if (field) {
-				/* bottom field of a SEQ_TB buffer
-				 * Skip the top field data by */
+				/*
+				 * bottom field of a SEQ_TB buffer
+				 * Skip the top field data by
+				 */
 				int height = q_data->height / 2;
 				int bpp = fmt->fourcc == V4L2_PIX_FMT_NV12 ?
 						1 : (vpdma_fmt->depth >> 3);
@@ -1326,9 +1330,7 @@ static irqreturn_t vpe_irq(int irq_vpe, void *data)
 	struct vpe_dev *dev = (struct vpe_dev *)data;
 	struct vpe_ctx *ctx;
 	struct vpe_q_data *d_q_data;
-	struct vpe_q_data *s_q_data;
-	struct vb2_buffer *s_vb, *d_vb;
-	struct v4l2_buffer *s_buf, *d_buf;
+	struct vb2_v4l2_buffer *s_vb, *d_vb;
 	unsigned long flags;
 	u32 irqst0, irqst1;
 	bool list_complete = false;
@@ -1376,9 +1378,11 @@ static irqreturn_t vpe_irq(int irq_vpe, void *data)
 			irqst0, irqst1);
 	}
 
-	/* Setup next operation only when list complete IRQ occurs
-	 * otherwise, skip the following code */
-	if (list_complete != true)
+	/*
+	 * Setup next operation only when list complete IRQ occurs
+	 * otherwise, skip the following code
+	 */
+	if (!list_complete)
 		goto handled;
 
 	disable_irqs(ctx);
@@ -1398,20 +1402,18 @@ static irqreturn_t vpe_irq(int irq_vpe, void *data)
 
 	s_vb = ctx->src_vbs[0];
 	d_vb = ctx->dst_vb;
-	s_buf = &s_vb->v4l2_buf;
-	d_buf = &d_vb->v4l2_buf;
 
-	d_buf->flags = s_buf->flags;
+	d_vb->flags = s_vb->flags;
+	d_vb->timestamp = s_vb->timestamp;
 
-	d_buf->timestamp = s_buf->timestamp;
-	if (s_buf->flags & V4L2_BUF_FLAG_TIMECODE)
-		d_buf->timecode = s_buf->timecode;
+	if (s_vb->flags & V4L2_BUF_FLAG_TIMECODE)
+		d_vb->timecode = s_vb->timecode;
 
-	d_buf->sequence = ctx->sequence;
+	d_vb->sequence = ctx->sequence;
 
 	d_q_data = &ctx->q_data[Q_DATA_DST];
 	if (d_q_data->flags & Q_IS_INTERLACED) {
-		d_buf->field = ctx->field;
+		d_vb->field = ctx->field;
 		if (ctx->field == V4L2_FIELD_BOTTOM) {
 			ctx->sequence++;
 			ctx->field = V4L2_FIELD_TOP;
@@ -1420,19 +1422,19 @@ static irqreturn_t vpe_irq(int irq_vpe, void *data)
 			ctx->field = V4L2_FIELD_BOTTOM;
 		}
 	} else {
-		d_buf->field = V4L2_FIELD_NONE;
+		d_vb->field = V4L2_FIELD_NONE;
 		ctx->sequence++;
 	}
 
-	s_q_data = &ctx->q_data[Q_DATA_SRC];
-
 	if (ctx->deinterlacing) {
-		/* Allow source buffer to be dequeued only if it won't be used
+		/*
+		 * Allow source buffer to be dequeued only if it won't be used
 		 * in the next iteration. All vbs are initialized to first
 		 * buffer and we are shifting buffers every iteration, for the
 		 * first two iterations, no buffer will be dequeued.
 		 * This ensures that driver will keep (n-2)th (n-1)th and (n)th
-		 * field when deinterlacing is enabled */
+		 * field when deinterlacing is enabled
+		 */
 		if (ctx->src_vbs[2] != ctx->src_vbs[1])
 			s_vb = ctx->src_vbs[2];
 		else
@@ -1612,8 +1614,9 @@ static int __vpe_try_fmt(struct vpe_ctx *ctx, struct v4l2_format *f,
 	pix->num_planes = fmt->coplanar ? 2 : 1;
 	pix->pixelformat = fmt->fourcc;
 
-	/* for the actual image parameters, we need to consider the field height
-	 * of the image for SEQ_TB buffers.
+	/*
+	 * For the actual image parameters, we need to consider the field
+	 * height of the image for SEQ_TB buffers.
 	 */
 	if (pix->field == V4L2_FIELD_SEQ_TB)
 		height = pix->height / 2;
@@ -2036,6 +2039,7 @@ static const struct v4l2_ioctl_ops vpe_ioctl_ops = {
 	.vidioc_querybuf		= v4l2_m2m_ioctl_querybuf,
 	.vidioc_qbuf			= v4l2_m2m_ioctl_qbuf,
 	.vidioc_dqbuf			= v4l2_m2m_ioctl_dqbuf,
+	.vidioc_expbuf			= v4l2_m2m_ioctl_expbuf,
 	.vidioc_streamon		= v4l2_m2m_ioctl_streamon,
 	.vidioc_streamoff		= v4l2_m2m_ioctl_streamoff,
 
@@ -2047,7 +2051,7 @@ static const struct v4l2_ioctl_ops vpe_ioctl_ops = {
  * Queue operations
  */
 static int vpe_queue_setup(struct vb2_queue *vq,
-			   const struct v4l2_format *fmt,
+			   const void *parg,
 			   unsigned int *nbuffers, unsigned int *nplanes,
 			   unsigned int sizes[], void *alloc_ctxs[])
 {
@@ -2074,6 +2078,7 @@ static int vpe_queue_setup(struct vb2_queue *vq,
 
 static int vpe_buf_prepare(struct vb2_buffer *vb)
 {
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vpe_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
 	struct vpe_q_data *q_data;
 	int i, num_planes;
@@ -2085,11 +2090,11 @@ static int vpe_buf_prepare(struct vb2_buffer *vb)
 
 	if (vb->vb2_queue->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		if (!(q_data->flags & Q_IS_INTERLACED)) {
-			vb->v4l2_buf.field = V4L2_FIELD_NONE;
+			vbuf->field = V4L2_FIELD_NONE;
 		} else {
-			if (vb->v4l2_buf.field != V4L2_FIELD_TOP &&
-			    vb->v4l2_buf.field != V4L2_FIELD_BOTTOM &&
-			    vb->v4l2_buf.field != V4L2_FIELD_SEQ_TB)
+			if (vbuf->field != V4L2_FIELD_TOP &&
+			    vbuf->field != V4L2_FIELD_BOTTOM &&
+			    vbuf->field != V4L2_FIELD_SEQ_TB)
 				return -EINVAL;
 		}
 	}
@@ -2108,14 +2113,14 @@ static int vpe_buf_prepare(struct vb2_buffer *vb)
 		vb2_set_plane_payload(vb, i, q_data->sizeimage[i]);
 
 	if (num_planes) {
-		if (vb->v4l2_planes[0].m.fd ==
-		    vb->v4l2_planes[1].m.fd) {
+		if (vb->planes[0].m.fd ==
+		    vb->planes[1].m.fd) {
 			/*
 			 * So it appears we are in a single memory buffer
 			 * with 2 plane case. Then we need to also set the
 			 * data_offset properly
 			 */
-			vb->v4l2_planes[1].data_offset =
+			vb->planes[1].data_offset =
 				vb2_get_plane_payload(vb, 0);
 		}
 	}
@@ -2124,14 +2129,98 @@ static int vpe_buf_prepare(struct vb2_buffer *vb)
 
 static void vpe_buf_queue(struct vb2_buffer *vb)
 {
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vpe_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
 
-	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vb);
+	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vbuf);
+}
+
+static int check_srcdst_sizes(struct vpe_ctx *ctx)
+{
+	struct vpe_q_data *s_q_data =  &ctx->q_data[Q_DATA_SRC];
+	struct vpe_q_data *d_q_data =  &ctx->q_data[Q_DATA_DST];
+	unsigned int src_w = s_q_data->c_rect.width;
+	unsigned int src_h = s_q_data->c_rect.height;
+	unsigned int dst_w = d_q_data->c_rect.width;
+	unsigned int dst_h = d_q_data->c_rect.height;
+
+	if (src_w == dst_w && src_h == dst_h)
+		return 0;
+
+	if (src_h <= SC_MAX_PIXEL_HEIGHT &&
+	    src_w <= SC_MAX_PIXEL_WIDTH &&
+	    dst_h <= SC_MAX_PIXEL_HEIGHT &&
+	    dst_w <= SC_MAX_PIXEL_WIDTH)
+		return 0;
+
+	return -1;
+}
+
+static void vpe_return_all_buffers(struct vpe_ctx *ctx,  struct vb2_queue *q,
+				   enum vb2_buffer_state state)
+{
+	struct vb2_v4l2_buffer *vb;
+	unsigned long flags;
+
+	for (;;) {
+		if (V4L2_TYPE_IS_OUTPUT(q->type))
+			vb = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
+		else
+			vb = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
+		if (!vb)
+			break;
+		spin_lock_irqsave(&ctx->dev->lock, flags);
+		v4l2_m2m_buf_done(vb, state);
+		spin_unlock_irqrestore(&ctx->dev->lock, flags);
+	}
+
+	/*
+	 * Cleanup the in-transit vb2 buffers that have been
+	 * removed from their respective queue already but for
+	 * which procecessing has not been completed yet.
+	 */
+	if (V4L2_TYPE_IS_OUTPUT(q->type)) {
+		spin_lock_irqsave(&ctx->dev->lock, flags);
+
+		if (ctx->src_vbs[2])
+			v4l2_m2m_buf_done(ctx->src_vbs[2], state);
+
+		if (ctx->src_vbs[1] && (ctx->src_vbs[1] != ctx->src_vbs[2]))
+			v4l2_m2m_buf_done(ctx->src_vbs[1], state);
+
+		if (ctx->src_vbs[0] &&
+		    (ctx->src_vbs[0] != ctx->src_vbs[1]) &&
+		    (ctx->src_vbs[0] != ctx->src_vbs[2]))
+			v4l2_m2m_buf_done(ctx->src_vbs[0], state);
+
+		ctx->src_vbs[2] = NULL;
+		ctx->src_vbs[1] = NULL;
+		ctx->src_vbs[0] = NULL;
+
+		spin_unlock_irqrestore(&ctx->dev->lock, flags);
+	} else {
+		if (ctx->dst_vb) {
+			spin_lock_irqsave(&ctx->dev->lock, flags);
+
+			v4l2_m2m_buf_done(ctx->dst_vb, state);
+			ctx->dst_vb = NULL;
+			spin_unlock_irqrestore(&ctx->dev->lock, flags);
+		}
+	}
 }
 
 static int vpe_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct vpe_ctx *ctx = vb2_get_drv_priv(q);
+
+	/* Check any of the size exceed maximum scaling sizes */
+	if (check_srcdst_sizes(ctx)) {
+		vpe_err(ctx->dev,
+			"Conversion setup failed, check source and destination parameters\n"
+			);
+		vpe_return_all_buffers(ctx, q, VB2_BUF_STATE_QUEUED);
+		return -EINVAL;
+	}
 
 	if (ctx->deinterlacing)
 		config_edi_input_mode(ctx, 0x0);
@@ -2145,53 +2234,11 @@ static int vpe_start_streaming(struct vb2_queue *q, unsigned int count)
 static void vpe_stop_streaming(struct vb2_queue *q)
 {
 	struct vpe_ctx *ctx = vb2_get_drv_priv(q);
-	struct vb2_buffer *vb;
-	unsigned long flags;
 
 	vpe_dump_regs(ctx->dev);
 	vpdma_dump_regs(ctx->dev->vpdma);
 
-	for (;;) {
-		if (V4L2_TYPE_IS_OUTPUT(q->type))
-			vb = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
-		else
-			vb = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
-		if (vb == NULL)
-			break;
-		spin_lock_irqsave(&ctx->dev->lock, flags);
-		v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
-		spin_unlock_irqrestore(&ctx->dev->lock, flags);
-	}
-
-	/*
-	 * Cleanup the in-transit vb2 buffers that have been
-	 * removed from their respective queue already but for
-	 * which procecessing has not been completed yet.
-	 */
-	if (V4L2_TYPE_IS_OUTPUT(q->type)) {
-		spin_lock_irqsave(&ctx->dev->lock, flags);
-		if (ctx->src_vbs[2]) {
-			v4l2_m2m_buf_done(ctx->src_vbs[2], VB2_BUF_STATE_ERROR);
-			ctx->src_vbs[2] = NULL;
-		}
-		if (ctx->src_vbs[1]) {
-			v4l2_m2m_buf_done(ctx->src_vbs[1], VB2_BUF_STATE_ERROR);
-			ctx->src_vbs[1] = NULL;
-		}
-		if (ctx->src_vbs[0]) {
-			v4l2_m2m_buf_done(ctx->src_vbs[0], VB2_BUF_STATE_ERROR);
-			ctx->src_vbs[0] = NULL;
-		}
-		spin_unlock_irqrestore(&ctx->dev->lock, flags);
-	} else {
-		if (ctx->dst_vb) {
-			spin_lock_irqsave(&ctx->dev->lock, flags);
-
-			v4l2_m2m_buf_done(ctx->dst_vb, VB2_BUF_STATE_ERROR);
-			ctx->dst_vb = NULL;
-			spin_unlock_irqrestore(&ctx->dev->lock, flags);
-		}
-	}
+	vpe_return_all_buffers(ctx, q, VB2_BUF_STATE_ERROR);
 }
 
 static struct vb2_ops vpe_qops = {

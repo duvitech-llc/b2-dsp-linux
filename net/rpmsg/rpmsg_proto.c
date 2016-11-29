@@ -1,7 +1,7 @@
 /*
  * AF_RPMSG: Remote processor messaging sockets
  *
- * Copyright (C) 2011-2015 Texas Instruments, Inc.
+ * Copyright (C) 2011-2016 Texas Instruments Incorporated - http://www.ti.com/
  *
  * Ohad Ben-Cohen <ohad@wizery.com>
  * Robert Tivy <rtivy@ti.com>
@@ -504,7 +504,7 @@ static int rpmsg_sock_create(struct net *net, struct socket *sock, int proto,
 	if (proto != 0)
 		return -EPROTONOSUPPORT;
 
-	sk = sk_alloc(net, PF_RPMSG, GFP_KERNEL, &rpmsg_proto);
+	sk = sk_alloc(net, PF_RPMSG, GFP_KERNEL, &rpmsg_proto, kern);
 	if (!sk)
 		return -ENOMEM;
 
@@ -660,6 +660,7 @@ static int rpmsg_proto_probe(struct rpmsg_channel *rpdev)
 	if (ret) {
 		dev_err(dev, "failed to add rpmsg addr %d: %d\n", dst, ret);
 		kfree(sock_list);
+		goto out;
 	}
 	rpdev->ept->priv = sock_list;
 
@@ -748,7 +749,6 @@ MODULE_DEVICE_TABLE(rpmsg, rpmsg_proto_id_table);
 
 static struct rpmsg_driver rpmsg_proto_driver = {
 	.drv.name	= KBUILD_MODNAME,
-	.drv.owner	= THIS_MODULE,
 	.id_table	= rpmsg_proto_id_table,
 	.probe		= rpmsg_proto_probe,
 	.callback	= rpmsg_proto_cb,
@@ -798,4 +798,5 @@ module_exit(rpmsg_proto_exit);
 
 MODULE_DESCRIPTION("Remote processor messaging protocol");
 MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("rpmsg:rpmsg-proto");
 MODULE_ALIAS_NETPROTO(AF_RPMSG);

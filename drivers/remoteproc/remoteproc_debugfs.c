@@ -157,7 +157,7 @@ rproc_recovery_write(struct file *filp, const char __user *user_buf,
 	size_t buf_size;
 	int ret;
 
-	if (count > sizeof(buf))
+	if (count < 1 || count > sizeof(buf))
 		return count;
 
 	buf_size = min_t(size_t, count, sizeof(buf) - 1);

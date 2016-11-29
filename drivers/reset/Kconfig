@@ -15,6 +15,7 @@ menuconfig RESET_CONTROLLER
 config SYSCON_RESET
 	tristate "SYSCON Reset Driver"
 	depends on RESET_CONTROLLER
+	depends on HAS_IOMEM
 	select MFD_SYSCON
 	help
 	  This enables the reset driver support for devices with memory-mapped

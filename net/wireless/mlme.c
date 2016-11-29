@@ -2,6 +2,7 @@
  * cfg80211 MLME SAP interface
  *
  * Copyright (c) 2009, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2015		Intel Deutschland GmbH
  */
 
 #include <linux/kernel.h>
@@ -17,6 +18,9 @@
 #include "nl80211.h"
 #include "rdev-ops.h"
 
+static unsigned int dfs_nop_time_ms = IEEE80211_DFS_MIN_NOP_TIME_MS;
+module_param(dfs_nop_time_ms, uint, 0644);
+MODULE_PARM_DESC(dfs_nop_time_ms, "DFS NOP time (in ms)");
 
 void cfg80211_rx_assoc_resp(struct net_device *dev, struct cfg80211_bss *bss,
 			    const u8 *buf, size_t len, int uapsd_queues)
@@ -389,6 +393,7 @@ void cfg80211_mlme_down(struct cfg80211_registered_device *rdev,
 
 struct cfg80211_mgmt_registration {
 	struct list_head list;
+	struct wireless_dev *wdev;
 
 	u32 nlportid;
 
@@ -398,6 +403,46 @@ struct cfg80211_mgmt_registration {
 
 	u8 match[];
 };
+
+static void
+cfg80211_process_mlme_unregistrations(struct cfg80211_registered_device *rdev)
+{
+	struct cfg80211_mgmt_registration *reg;
+
+	ASSERT_RTNL();
+
+	spin_lock_bh(&rdev->mlme_unreg_lock);
+	while ((reg = list_first_entry_or_null(&rdev->mlme_unreg,
+					       struct cfg80211_mgmt_registration,
+					       list))) {
+		list_del(&reg->list);
+		spin_unlock_bh(&rdev->mlme_unreg_lock);
+
+		if (rdev->ops->mgmt_frame_register) {
+			u16 frame_type = le16_to_cpu(reg->frame_type);
+
+			rdev_mgmt_frame_register(rdev, reg->wdev,
+						 frame_type, false);
+		}
+
+		kfree(reg);
+
+		spin_lock_bh(&rdev->mlme_unreg_lock);
+	}
+	spin_unlock_bh(&rdev->mlme_unreg_lock);
+}
+
+void cfg80211_mlme_unreg_wk(struct work_struct *wk)
+{
+	struct cfg80211_registered_device *rdev;
+
+	rdev = container_of(wk, struct cfg80211_registered_device,
+			    mlme_unreg_wk);
+
+	rtnl_lock();
+	cfg80211_process_mlme_unregistrations(rdev);
+	rtnl_unlock();
+}
 
 int cfg80211_mlme_register_mgmt(struct wireless_dev *wdev, u32 snd_portid,
 				u16 frame_type, const u8 *match_data,
@@ -449,10 +494,17 @@ int cfg80211_mlme_register_mgmt(struct wireless_dev *wdev, u32 snd_portid,
 	nreg->match_len = match_len;
 	nreg->nlportid = snd_portid;
 	nreg->frame_type = cpu_to_le16(frame_type);
+	nreg->wdev = wdev;
 	list_add(&nreg->list, &wdev->mgmt_registrations);
+	spin_unlock_bh(&wdev->mgmt_registrations_lock);
+
+	/* process all unregistrations to avoid driver confusion */
+	cfg80211_process_mlme_unregistrations(rdev);
 
 	if (rdev->ops->mgmt_frame_register)
 		rdev_mgmt_frame_register(rdev, wdev, frame_type, true);
+
+	return 0;
 
  out:
 	spin_unlock_bh(&wdev->mgmt_registrations_lock);
@@ -472,15 +524,12 @@ void cfg80211_mlme_unregister_socket(struct wireless_dev *wdev, u32 nlportid)
 		if (reg->nlportid != nlportid)
 			continue;
 
-		if (rdev->ops->mgmt_frame_register) {
-			u16 frame_type = le16_to_cpu(reg->frame_type);
-
-			rdev_mgmt_frame_register(rdev, wdev,
-						 frame_type, false);
-		}
-
 		list_del(&reg->list);
-		kfree(reg);
+		spin_lock(&rdev->mlme_unreg_lock);
+		list_add_tail(&reg->list, &rdev->mlme_unreg);
+		spin_unlock(&rdev->mlme_unreg_lock);
+
+		schedule_work(&rdev->mlme_unreg_wk);
 	}
 
 	spin_unlock_bh(&wdev->mgmt_registrations_lock);
@@ -496,16 +545,15 @@ void cfg80211_mlme_unregister_socket(struct wireless_dev *wdev, u32 nlportid)
 
 void cfg80211_mlme_purge_registrations(struct wireless_dev *wdev)
 {
-	struct cfg80211_mgmt_registration *reg, *tmp;
+	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
 
 	spin_lock_bh(&wdev->mgmt_registrations_lock);
-
-	list_for_each_entry_safe(reg, tmp, &wdev->mgmt_registrations, list) {
-		list_del(&reg->list);
-		kfree(reg);
-	}
-
+	spin_lock(&rdev->mlme_unreg_lock);
+	list_splice_tail_init(&wdev->mgmt_registrations, &rdev->mlme_unreg);
+	spin_unlock(&rdev->mlme_unreg_lock);
 	spin_unlock_bh(&wdev->mgmt_registrations_lock);
+
+	cfg80211_process_mlme_unregistrations(rdev);
 }
 
 int cfg80211_mlme_mgmt_tx(struct cfg80211_registered_device *rdev,
@@ -694,7 +742,7 @@ void cfg80211_dfs_channels_update_work(struct work_struct *work)
 				continue;
 
 			timeout = c->dfs_state_entered + msecs_to_jiffies(
-					IEEE80211_DFS_MIN_NOP_TIME_MS);
+					dfs_nop_time_ms);
 
 			if (time_after_eq(jiffies, timeout)) {
 				c->dfs_state = NL80211_DFS_USABLE;
@@ -740,7 +788,7 @@ void cfg80211_radar_event(struct wiphy *wiphy,
 	 */
 	cfg80211_set_dfs_state(wiphy, chandef, NL80211_DFS_UNAVAILABLE);
 
-	timeout = msecs_to_jiffies(IEEE80211_DFS_MIN_NOP_TIME_MS);
+	timeout = msecs_to_jiffies(dfs_nop_time_ms);
 	queue_delayed_work(cfg80211_wq, &rdev->dfs_update_channels_wk,
 			   timeout);
 

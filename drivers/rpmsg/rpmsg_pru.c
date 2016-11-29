@@ -1,9 +1,8 @@
 /*
  * PRU Remote Processor Messaging Driver
  *
- * Copyright (C) 2015 Texas Instruments, Inc.
- *
- * Jason Reeder <jreeder@ti.com>
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
+ *	Jason Reeder <jreeder@ti.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and

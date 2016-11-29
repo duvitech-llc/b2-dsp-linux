@@ -72,8 +72,6 @@
 		debounce-delay-ms = <5>;
 		col-scan-delay-us = <2>;
 
-		linux,wakeup;
-
 		row-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH		/* Bank0, pin12 */
 			     &gpio0 13 GPIO_ACTIVE_HIGH		/* Bank0, pin13 */
 			     &gpio0 14 GPIO_ACTIVE_HIGH		/* Bank0, pin14 */
@@ -102,7 +100,7 @@
 			0x03030069>;	/* LEFT */
 	};
 
-	lcd_bl: backlight {
+	backlight {
 		compatible = "pwm-backlight";
 		pwms = <&ecap0 0 50000 PWM_POLARITY_INVERTED>;
 		brightness-levels = <0 51 53 56 62 75 101 152 255>;
@@ -393,32 +391,6 @@
 				0x1ac (PIN_INPUT_PULLDOWN | MUX_MODE7)
 			>;
 		};
-
-		matrix_keypad_default: matrix_keypad_default {
-			pinctrl-single,pins = <
-				0x12c (PIN_OUTPUT | MUX_MODE7)		/* mii1_tx_clk.gpio3_9 */
-				0x130 (PIN_OUTPUT | MUX_MODE7)		/* mii1_rx_clk.gpio3_10 */
-				0x134 (PIN_OUTPUT | MUX_MODE7)		/* mii1_rxd3.gpio2_18 */
-				0x138 (PIN_OUTPUT | MUX_MODE7)		/* mii1_rxd2.gpio2_19 */
-				0x178 (PIN_INPUT_PULLDOWN | MUX_MODE7)	/* uart1_ctsn.gpio0_12 */
-				0x17C (PIN_INPUT_PULLDOWN | MUX_MODE7)	/* uart1_rtsn.gpio0_13 */
-				0x180 (PIN_INPUT_PULLDOWN | MUX_MODE7)	/* uart1_rxd.gpio0_14 */
-				0x184 (PIN_INPUT_PULLDOWN | MUX_MODE7)	/* uart1_txd.gpio0_15 */
-			>;
-		};
-
-		matrix_keypad_sleep: matrix_keypad_sleep {
-			pinctrl-single,pins = <
-				0x12c (PIN_INPUT_PULLUP | MUX_MODE7)
-				0x130 (PIN_INPUT_PULLUP | MUX_MODE7)
-				0x134 (PIN_INPUT_PULLUP | MUX_MODE7)
-				0x138 (PIN_INPUT_PULLUP | MUX_MODE7)
-				0x178 (PIN_INPUT_PULLDOWN | MUX_MODE7)
-				0x17C (PIN_INPUT_PULLDOWN | MUX_MODE7)
-				0x180 (PIN_INPUT_PULLDOWN | MUX_MODE7)
-				0x184 (PIN_INPUT_PULLDOWN | MUX_MODE7)
-			>;
-		};
 };
 
 &mmc1 {
@@ -463,7 +435,7 @@
 	status = "okay";
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c0_pins>;
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 
 	tps65218: tps65218@24 {
 		reg = <0x24>;
@@ -632,9 +604,10 @@
 	nand@0,0 {
 		compatible = "ti,omap2-nand";
 		reg = <0 0 4>; /* CS0, offset 0, IO size 4 */
-		interrupt-parent = <&gic>;
-		interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL_HIGH>;
-		ready-gpio = <&gpmc 0 GPIO_ACTIVE_HIGH>;	/* gpmc_wait0 */
+		interrupt-parent = <&gpmc>;
+		interrupts = <0 IRQ_TYPE_NONE>, /* fifoevent */
+			     <1 IRQ_TYPE_NONE>;	/* termcount */
+		rb-gpios = <&gpmc 0 GPIO_ACTIVE_HIGH>;	/* gpmc_wait0 */
 		ti,nand-ecc-opt = "bch16";
 		ti,elm-id = <&elm>;
 		nand-bus-width = <8>;
@@ -866,8 +839,9 @@
 	ti,scale-data-fw = "am43x-evm-scale-data.bin";
 };
 
-&cpu {
-	cpu0-supply = <&dcdc2>;
+&synctimer_32kclk {
+	assigned-clocks = <&mux_synctimer32k_ck>;
+	assigned-clock-parents = <&clkdiv32k_ick>;
 };
 
 &sgx {

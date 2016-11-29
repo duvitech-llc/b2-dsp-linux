@@ -466,7 +466,7 @@ static int r852_ecc_calculate(struct mtd_info *mtd, const uint8_t *dat,
 static int r852_ecc_correct(struct mtd_info *mtd, uint8_t *dat,
 				uint8_t *read_ecc, uint8_t *calc_ecc)
 {
-	uint16_t ecc_reg;
+	uint32_t ecc_reg;
 	uint8_t ecc_status, err_byte;
 	int i, error = 0;
 
@@ -477,7 +477,7 @@ static int r852_ecc_correct(struct mtd_info *mtd, uint8_t *dat,
 
 	if (dev->dma_error) {
 		dev->dma_error = 0;
-		return -1;
+		return -EIO;
 	}
 
 	r852_write_reg(dev, R852_CTL, dev->ctlreg | R852_CTL_ECC_ACCESS);
@@ -491,7 +491,7 @@ static int r852_ecc_correct(struct mtd_info *mtd, uint8_t *dat,
 		/* ecc uncorrectable error */
 		if (ecc_status & R852_ECC_FAIL) {
 			dbg("ecc: unrecoverable error, in half %d", i);
-			error = -1;
+			error = -EBADMSG;
 			goto exit;
 		}
 
@@ -641,7 +641,6 @@ static int r852_register_nand_device(struct r852_device *dev)
 
 	WARN_ON(dev->card_registred);
 
-	dev->mtd->owner = THIS_MODULE;
 	dev->mtd->priv = dev->chip;
 	dev->mtd->dev.parent = &dev->pci_dev->dev;
 
@@ -653,11 +652,15 @@ static int r852_register_nand_device(struct r852_device *dev)
 	if (sm_register_device(dev->mtd, dev->sm))
 		goto error2;
 
-	if (device_create_file(&dev->mtd->dev, &dev_attr_media_type))
+	if (device_create_file(&dev->mtd->dev, &dev_attr_media_type)) {
 		message("can't create media type sysfs attribute");
+		goto error3;
+	}
 
 	dev->card_registred = 1;
 	return 0;
+error3:
+	nand_release(dev->mtd);
 error2:
 	kfree(dev->mtd);
 error1:

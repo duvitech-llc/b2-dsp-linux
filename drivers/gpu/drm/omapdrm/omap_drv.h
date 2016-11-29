@@ -24,17 +24,20 @@
 #include <linux/platform_data/omap_drm.h>
 #include <linux/types.h>
 #include <linux/wait.h>
-#include <video/omapdss.h>
 
 #include <drm/drmP.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_gem.h>
 #include <drm/omap_drm.h>
 
+#include "dss/omapdss.h"
+
 #define DBG(fmt, ...) DRM_DEBUG(fmt"\n", ##__VA_ARGS__)
 #define VERB(fmt, ...) if (0) DRM_DEBUG(fmt, ##__VA_ARGS__) /* verbose debug */
 
 #define MODULE_NAME     "omapdrm"
+
+struct omap_drm_usergart;
 
 /* parameters which describe (unrotated) coordinates of scanout within a fb: */
 struct omap_drm_window {
@@ -93,6 +96,7 @@ struct omap_drm_private {
 	/* list of GEM objects: */
 	struct list_head obj_list;
 
+	struct omap_drm_usergart *usergart;
 	bool has_dmm;
 
 	/* plane properties */
@@ -136,8 +140,8 @@ void omap_gem_describe_objects(struct list_head *list, struct seq_file *m);
 int omap_gem_resume(struct device *dev);
 #endif
 
-int omap_irq_enable_vblank(struct drm_device *dev, int crtc_id);
-void omap_irq_disable_vblank(struct drm_device *dev, int crtc_id);
+int omap_irq_enable_vblank(struct drm_device *dev, unsigned int pipe);
+void omap_irq_disable_vblank(struct drm_device *dev, unsigned int pipe);
 void __omap_irq_register(struct drm_device *dev, struct omap_drm_irq *irq);
 void __omap_irq_unregister(struct drm_device *dev, struct omap_drm_irq *irq);
 void omap_irq_register(struct drm_device *dev, struct omap_drm_irq *irq);
@@ -145,8 +149,18 @@ void omap_irq_unregister(struct drm_device *dev, struct omap_drm_irq *irq);
 void omap_drm_irq_uninstall(struct drm_device *dev);
 int omap_drm_irq_install(struct drm_device *dev);
 
+#ifdef CONFIG_DRM_FBDEV_EMULATION
 struct drm_fb_helper *omap_fbdev_init(struct drm_device *dev);
 void omap_fbdev_free(struct drm_device *dev);
+#else
+static inline struct drm_fb_helper *omap_fbdev_init(struct drm_device *dev)
+{
+	return NULL;
+}
+static inline void omap_fbdev_free(struct drm_device *dev)
+{
+}
+#endif
 
 struct omap_video_timings *omap_crtc_timings(struct drm_crtc *crtc);
 enum omap_channel omap_crtc_channel(struct drm_crtc *crtc);
@@ -199,6 +213,8 @@ void omap_gem_deinit(struct drm_device *dev);
 
 struct drm_gem_object *omap_gem_new(struct drm_device *dev,
 		union omap_gem_size gsize, uint32_t flags);
+struct drm_gem_object *omap_gem_new_dmabuf(struct drm_device *dev, size_t size,
+		struct sg_table *sgt);
 int omap_gem_new_handle(struct drm_device *dev, struct drm_file *file,
 		union omap_gem_size gsize, uint32_t flags, uint32_t *handle);
 void omap_gem_free_object(struct drm_gem_object *obj);
@@ -239,17 +255,6 @@ struct dma_buf *omap_gem_prime_export(struct drm_device *dev,
 struct drm_gem_object *omap_gem_prime_import(struct drm_device *dev,
 		struct dma_buf *buffer);
 
-static inline int align_pitch(int pitch, int width, int bpp)
-{
-	int bytespp = (bpp + 7) / 8;
-	/* in case someone tries to feed us a completely bogus stride: */
-	pitch = max(pitch, width * bytespp);
-	/* PVR needs alignment to 8 pixels.. right now that is the most
-	 * restrictive stride requirement..
-	 */
-	return roundup(pitch, 8 * bytespp);
-}
-
 /* map crtc to vblank mask */
 uint32_t pipe2vbl(struct drm_crtc *crtc);
 struct omap_dss_device *omap_encoder_get_dssdev(struct drm_encoder *encoder);
@@ -279,69 +284,16 @@ fail:
 	return -ENOENT;
 }
 
-#if IS_ENABLED(CONFIG_DRM_OMAP_WB_M2M)
+#if IS_ENABLED(CONFIG_DRM_OMAP_WB)
 
-int wbm2m_init(struct drm_device *drmdev);
-void wbm2m_cleanup(struct drm_device *drmdev);
+int wb_init(struct drm_device *drmdev);
+void wb_cleanup(struct drm_device *drmdev);
 
 #else
 
-static inline int wbm2m_init(struct drm_device *drmdev) { return 0; }
-static inline void wbm2m_cleanup(struct drm_device *drmdev) { }
+static inline int wb_init(struct drm_device *drmdev) { return 0; }
+static inline void wb_cleanup(struct drm_device *drmdev) { }
 
 #endif
-
-#if IS_ENABLED(CONFIG_DRM_OMAP_SGX_PLUGIN)
-
-/* interface that plug-in drivers (for now just PVR) can implement */
-struct omap_drm_plugin {
-	const char *name;
-
-	/* drm functions */
-	int (*load)(struct drm_device *dev, unsigned long flags);
-	int (*unload)(struct drm_device *dev);
-	int (*open)(struct drm_device *dev, struct drm_file *file);
-	int (*release)(struct drm_device *dev, struct drm_file *file);
-
-	struct drm_ioctl_desc *ioctls;
-	int num_ioctls;
-	int ioctl_base;
-};
-
-int omap_drm_register_plugin(struct omap_drm_plugin *plugin);
-int omap_drm_unregister_plugin(struct omap_drm_plugin *plugin);
-
-void *omap_drm_file_priv(struct drm_file *file);
-void omap_drm_file_set_priv(struct drm_file *file, void *priv);
-
-void *omap_gem_priv(struct drm_gem_object *obj);
-void omap_gem_set_priv(struct drm_gem_object *obj, void *priv);
-void omap_gem_vm_open(struct vm_area_struct *vma);
-void omap_gem_vm_close(struct vm_area_struct *vma);
-
-/* for external plugin buffers wrapped as GEM object (via. omap_gem_new_ext())
- * a vm_ops struct can be provided to get callback notification of various
- * events..
- */
-struct omap_gem_vm_ops {
-	void (*open)(struct vm_area_struct *area);
-	void (*close)(struct vm_area_struct *area);
-	/*maybe: int (*fault)(struct vm_area_struct *vma,
-	  struct vm_fault *vmf)*/
-
-	/* note: mmap isn't expected to do anything. it is just to allow buffer
-	 * allocate to update it's own internal state
-	 */
-	void (*mmap)(struct file *, struct vm_area_struct *);
-};
-
-struct drm_gem_object *omap_gem_new_ext(struct drm_device *dev,
-		union omap_gem_size gsize, uint32_t flags,
-		dma_addr_t paddr, struct page **pages,
-		struct omap_gem_vm_ops *ops);
-
-void omap_gem_op_update(void);
-int omap_gem_set_sync_object(struct drm_gem_object *obj, void *syncobj);
-#endif /* CONFIG_DRM_OMAP_SGX_PLUGIN */
 
 #endif /* __OMAP_DRV_H__ */

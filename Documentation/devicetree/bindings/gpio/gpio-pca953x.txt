@@ -21,9 +21,11 @@ Required properties:
 	maxim,max7313
 	maxim,max7315
 	ti,pca6107
+	ti,pca9536
 	ti,tca6408
 	ti,tca6416
 	ti,tca6424
+	ti,tca9539
 	exar,xra1202
 
 Example:

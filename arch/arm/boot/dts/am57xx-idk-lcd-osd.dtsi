@@ -66,10 +66,10 @@
 
 &epwmss0 {
 	status = "okay";
+};
 
-	ecap0: ecap@4843e100 {
-		status = "okay";
-	};
+&ecap0 {
+	status = "okay";
 };
 
 &i2c1 {

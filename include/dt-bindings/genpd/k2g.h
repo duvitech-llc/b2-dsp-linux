@@ -1,7 +1,7 @@
 /*
  * This header provides sample constants for binding ti,k2g.
  *
- * Copyright (C) 2015 Texas Instruments
+ * Copyright (C) 2015-2016 Texas Instruments
  */
 
 #ifndef _DT_BINDINGS_GENPD_K2G_H
@@ -72,4 +72,6 @@
 #define K2G_DEV_CGEM0			0x0046
 #define K2G_DEV_MSMC0			0x0047
 #define K2G_DEV_CBASS0			0x0049
+#define K2G_DEV_BOARD0			0x004c
+#define K2G_DEV_EDMA1			0x004f
 #endif

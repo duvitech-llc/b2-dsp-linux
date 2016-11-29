@@ -15,6 +15,7 @@
 #include <linux/irqchip/chained_irq.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/interrupt.h>
 #include <linux/irqdomain.h>
 #include <linux/module.h>
 #include <linux/msi.h>
@@ -42,6 +43,7 @@
 #define PCIE_RC_K2HK		0xb008
 #define PCIE_RC_K2E		0xb009
 #define PCIE_RC_K2L		0xb00a
+#define PCIE_RC_K2G		0xb00b
 
 #define to_keystone_pcie(x)	container_of(x, struct keystone_pcie, pp)
 
@@ -55,6 +57,8 @@ static void quirk_limit_mrrs(struct pci_dev *dev)
 		{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCIE_RC_K2E),
 		 .class = PCI_CLASS_BRIDGE_PCI << 8, .class_mask = ~0, },
 		{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCIE_RC_K2L),
+		 .class = PCI_CLASS_BRIDGE_PCI << 8, .class_mask = ~0, },
+		{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCIE_RC_K2G),
 		 .class = PCI_CLASS_BRIDGE_PCI << 8, .class_mask = ~0, },
 		{ 0, },
 	};
@@ -88,7 +92,7 @@ DECLARE_PCI_FIXUP_ENABLE(PCI_ANY_ID, PCI_ANY_ID, quirk_limit_mrrs);
 static int ks_pcie_establish_link(struct keystone_pcie *ks_pcie)
 {
 	struct pcie_port *pp = &ks_pcie->pp;
-	int count = 200;
+	unsigned int retries;
 
 	dw_pcie_setup_rc(pp);
 
@@ -99,21 +103,20 @@ static int ks_pcie_establish_link(struct keystone_pcie *ks_pcie)
 
 	ks_dw_pcie_initiate_link_train(ks_pcie);
 	/* check if the link is up or not */
-	while (!dw_pcie_link_up(pp)) {
+	for (retries = 0; retries < 200; retries++) {
+		if (dw_pcie_link_up(pp))
+			return 0;
 		usleep_range(100, 1000);
-		if (--count) {
-			ks_dw_pcie_initiate_link_train(ks_pcie);
-			continue;
-		}
-		dev_err(pp->dev, "phy link never came up\n");
-		return -EINVAL;
+		ks_dw_pcie_initiate_link_train(ks_pcie);
 	}
 
-	return 0;
+	dev_err(pp->dev, "phy link never came up\n");
+	return -EINVAL;
 }
 
-static void ks_pcie_msi_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void ks_pcie_msi_irq_handler(struct irq_desc *desc)
 {
+	unsigned int irq = irq_desc_get_irq(desc);
 	struct keystone_pcie *ks_pcie = irq_desc_get_handler_data(desc);
 	u32 offset = irq - ks_pcie->msi_host_irqs[0];
 	struct pcie_port *pp = &ks_pcie->pp;
@@ -139,8 +142,9 @@ static void ks_pcie_msi_irq_handler(unsigned int irq, struct irq_desc *desc)
  * Traverse through pending legacy interrupts and invoke handler for each. Also
  * takes care of interrupt controller level mask/ack operation.
  */
-static void ks_pcie_legacy_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void ks_pcie_legacy_irq_handler(struct irq_desc *desc)
 {
+	unsigned int irq = irq_desc_get_irq(desc);
 	struct keystone_pcie *ks_pcie = irq_desc_get_handler_data(desc);
 	struct pcie_port *pp = &ks_pcie->pp;
 	u32 irq_offset = irq - ks_pcie->legacy_host_irqs[0];
@@ -161,7 +165,7 @@ static void ks_pcie_legacy_irq_handler(unsigned int irq, struct irq_desc *desc)
 static int ks_pcie_get_irq_controller_info(struct keystone_pcie *ks_pcie,
 					   char *controller, int *num_irqs)
 {
-	int temp, max_host_irqs, legacy = 1, *host_irqs, ret = -EINVAL;
+	int temp, max_host_irqs, legacy = 1, *host_irqs;
 	struct device *dev = ks_pcie->pp.dev;
 	struct device_node *np_pcie = dev->of_node, **np_temp;
 
@@ -182,11 +186,15 @@ static int ks_pcie_get_irq_controller_info(struct keystone_pcie *ks_pcie,
 	*np_temp = of_find_node_by_name(np_pcie, controller);
 	if (!(*np_temp)) {
 		dev_err(dev, "Node for %s is absent\n", controller);
-		goto out;
+		return -EINVAL;
 	}
+
 	temp = of_irq_count(*np_temp);
-	if (!temp)
-		goto out;
+	if (!temp) {
+		dev_err(dev, "No IRQ entries in %s\n", controller);
+		return -EINVAL;
+	}
+
 	if (temp > max_host_irqs)
 		dev_warn(dev, "Too many %s interrupts defined %u\n",
 			(legacy ? "legacy" : "MSI"), temp);
@@ -200,12 +208,13 @@ static int ks_pcie_get_irq_controller_info(struct keystone_pcie *ks_pcie,
 		if (!host_irqs[temp])
 			break;
 	}
+
 	if (temp) {
 		*num_irqs = temp;
-		ret = 0;
+		return 0;
 	}
-out:
-	return ret;
+
+	return -EINVAL;
 }
 
 static void ks_pcie_setup_interrupts(struct keystone_pcie *ks_pcie)
@@ -214,21 +223,23 @@ static void ks_pcie_setup_interrupts(struct keystone_pcie *ks_pcie)
 
 	/* Legacy IRQ */
 	for (i = 0; i < ks_pcie->num_legacy_host_irqs; i++) {
-		irq_set_handler_data(ks_pcie->legacy_host_irqs[i], ks_pcie);
-		irq_set_chained_handler(ks_pcie->legacy_host_irqs[i],
-					ks_pcie_legacy_irq_handler);
+		irq_set_chained_handler_and_data(ks_pcie->legacy_host_irqs[i],
+						 ks_pcie_legacy_irq_handler,
+						 ks_pcie);
 	}
 	ks_dw_pcie_enable_legacy_irqs(ks_pcie);
 
 	/* MSI IRQ */
 	if (IS_ENABLED(CONFIG_PCI_MSI)) {
 		for (i = 0; i < ks_pcie->num_msi_host_irqs; i++) {
-			irq_set_chained_handler(ks_pcie->msi_host_irqs[i],
-						ks_pcie_msi_irq_handler);
-			irq_set_handler_data(ks_pcie->msi_host_irqs[i],
-					     ks_pcie);
+			irq_set_chained_handler_and_data(ks_pcie->msi_host_irqs[i],
+							 ks_pcie_msi_irq_handler,
+							 ks_pcie);
 		}
 	}
+
+	if (ks_pcie->error_irq > 0)
+		ks_dw_pcie_enable_error_irq(ks_pcie->va_app_base);
 }
 
 /*
@@ -292,6 +303,14 @@ static struct pcie_host_ops keystone_pcie_host_ops = {
 	.scan_bus = ks_dw_pcie_v3_65_scan_bus,
 };
 
+static irqreturn_t pcie_err_irq_handler(int irq, void *priv)
+{
+	struct keystone_pcie *ks_pcie = priv;
+
+	return ks_dw_pcie_handle_error_irq(ks_pcie->pp.dev,
+					   ks_pcie->va_app_base);
+}
+
 static int __init ks_add_pcie_port(struct keystone_pcie *ks_pcie,
 			 struct platform_device *pdev)
 {
@@ -312,6 +331,22 @@ static int __init ks_add_pcie_port(struct keystone_pcie *ks_pcie,
 			return ret;
 	}
 
+	/*
+	 * Index 0 is the platform interrupt for error interrupt
+	 * from RC.  This is optional.
+	 */
+	ks_pcie->error_irq = irq_of_parse_and_map(ks_pcie->np, 0);
+	if (ks_pcie->error_irq <= 0)
+		dev_info(&pdev->dev, "no error IRQ defined\n");
+	else {
+		if (request_irq(ks_pcie->error_irq, pcie_err_irq_handler,
+				IRQF_SHARED, "pcie-error-irq", ks_pcie) < 0) {
+			dev_err(&pdev->dev, "failed to request error IRQ %d\n",
+				ks_pcie->error_irq);
+			return ret;
+		}
+	}
+
 	pp->root_bus_nr = -1;
 	pp->ops = &keystone_pcie_host_ops;
 	ret = ks_dw_pcie_host_init(ks_pcie, ks_pcie->msi_intc_np);
@@ -320,7 +355,7 @@ static int __init ks_add_pcie_port(struct keystone_pcie *ks_pcie,
 		return ret;
 	}
 
-	return ret;
+	return 0;
 }
 
 static const struct of_device_id ks_pcie_of_match[] = {
@@ -336,7 +371,6 @@ static int __exit ks_pcie_remove(struct platform_device *pdev)
 {
 	struct keystone_pcie *ks_pcie = platform_get_drvdata(pdev);
 
-	phy_exit(ks_pcie->serdes_phy);
 	clk_disable_unprepare(ks_pcie->clk);
 
 	return 0;
@@ -344,7 +378,6 @@ static int __exit ks_pcie_remove(struct platform_device *pdev)
 
 static int __init ks_pcie_probe(struct platform_device *pdev)
 {
-	struct device_node *node = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	struct keystone_pcie *ks_pcie;
 	struct pcie_port *pp;
@@ -369,6 +402,7 @@ static int __init ks_pcie_probe(struct platform_device *pdev)
 	devm_release_mem_region(dev, res->start, resource_size(res));
 
 	pp->dev = dev;
+	ks_pcie->np = dev->of_node;
 	platform_set_drvdata(pdev, ks_pcie);
 	ks_pcie->clk = devm_clk_get(dev, "pcie");
 	if (IS_ERR(ks_pcie->clk)) {
@@ -379,26 +413,12 @@ static int __init ks_pcie_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ks_pcie->serdes_phy = devm_of_phy_get(dev, node, NULL);
-	if (IS_ERR(ks_pcie->serdes_phy)) {
-		ret = PTR_ERR(ks_pcie->serdes_phy);
-		dev_err(dev, "No %s serdes driver found: %d\n",
-			node->name, ret);
-		goto fail_clk;
-	}
-
-	ret = phy_init(ks_pcie->serdes_phy);
-	if (ret < 0)
-		goto fail_clk;
-
 	ret = ks_add_pcie_port(ks_pcie, pdev);
 	if (ret < 0)
-		goto fail_phy;
+		goto fail_clk;
 
 	return 0;
 
-fail_phy:
-	phy_exit(ks_pcie->serdes_phy);
 fail_clk:
 	clk_disable_unprepare(ks_pcie->clk);
 	return ret;

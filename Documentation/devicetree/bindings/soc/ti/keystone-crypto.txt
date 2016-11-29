@@ -1,66 +1,78 @@
 Keystone Crypto Driver
 
 This document explains the device tree bindings for the side-band Security
-Accelerator on keystone devices. 
+Accelerator on keystone devices.
 
 Required properties:
- - compatible: should be "ti,keystone-crypto".
+ - compatible: should be "ti,netcp-sa-crypto".
 
- - clock: pandle to clksa clock.
+ - clock: phandle to clksa clock.
 
- - reg: Should contain register location and length of the SA hardware
-	module.
+ - clock-names: functional clock name. Should be set to "fck".
+
+ - syscon-subsys: phandle to sa_config node, which represent registers common,
+        for SA and HWRNG modules.
 
  - ti,navigator-dmas and ti,navigator-dma-names: Security accelerator uses
 	2 dma channels. Rx and Tx. The first property is the pandle to the
 	knav_dmas subsystem and flow for RX channel and channel number for
 	TX channel. The second property is corresponding channel names.
 
- - rx-channel: name of RX channel.
+ - ti,rx-channel: name of RX channel.
 
- - rx-queue-depth and rx-buffer-size: RX channel may use upto 4 free
- 	descriptor queue. Those properties describes number of buffers in
-	each queue and the buffer's length.
+ - ti,rx-queue-depth: RX channel may use upto 4 free descriptor queue.
+	rx-queue-depth describes number of buffers in each queue.
 
- - rx-compl-queue: RX completion queue number.
- 
- - rx-pool: number of buffer descriptos and region for rx-pool.
+ - ti,rx-compl-queue: RX completion queue number.
 
- - tx-channel: name of TX channel.
+ - ti,rx-pool: number of buffer descriptos and region for rx-pool.
 
- - tx-queue-depth: number of TX descriptos.
+ - ti,tx-channel: name of TX channel.
 
- - tx-compl-queue: TX completion queue number.
+ - ti,tx-queue-depth: number of TX descriptos.
 
- - tx-pool: number of buffer descriptos and region for tx-pool.
+ - ti,tx-completion-queue: TX completion queue number.
 
- - tx-submit-queue: submition queue number for TX channel.
+ - ti,tx-pool: number of buffer descriptos and region for tx-pool.
 
- - sc-id: ???
+ - ti,tx-submit-queue: submition queue number for TX channel.
+
+ - ti,sc-id: range of security contex IDs available for driver
 
 
-Example:
+Example for K2HK:
 
-crypto@20c0000 {
-	compatible = "ti,keystone-crypto";
-	label = "crypto-gbe";
-	reg = <0x20c0000 0x40000>;
-	clocks = <&clksa>;
+sa_subsys: subsys@20c0000 {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	ranges = <0 0x20c0000 0x40000>;
+	compatible = "simple-bus";
 
-	ti,navigator-dmas = <&dma_gbe 26>, <&dma_gbe 6>;
-	ti,navigator-dma-names = "crypto-rx", "crypto-tx";
+	sa_config: subsys {
+		compatible = "syscon";
+		reg = <0x0 0x100>;
+	};
 
-	rx-channel = "crypto-rx";
-	rx-queue-depth = <256 64 0 0>;
-	rx-buffer-size = <1500 4096 0 0>;
-	rx-compl-queue = <8712>;
-	rx-pool	= <512 12>;
+	crypto {
+		compatible = "ti,netcp-sa-crypto";
+		syscon-subsys = <&sa_config>;
+		clocks = <&clksa>;
+		clock-names = "fck";
 
-	tx-channel = "crypto-tx";
-	tx-queue-depth = <256>;
-	tx-compl-queue = <8713>;
-	tx-pool = <512 12>;
-	tx-submit-queue = <646>;
+		ti,navigator-dmas = <&dma_gbe 26>, <&dma_gbe 6>;
+		ti,navigator-dma-names = "crypto-rx", "crypto-tx";
 
-	sc-id = <0x7000 0x71ff>;
+		ti,rx-channel = "crypto-rx";
+		ti,rx-queue-depth = <256 64 0 0>;
+		ti,rx-compl-queue = <8712>;
+		ti,rx-pool	= <512 12>;
+
+		ti,tx-channel = "crypto-tx";
+		ti,tx-queue-depth = <256>;
+		ti,tx-completion-queue = <8713>;
+		ti,tx-pool = <512 12>;
+		ti,tx-submit-queue = <646>;
+
+		ti,sc-id = <0x7000 0x71ff>;
+	};
 };

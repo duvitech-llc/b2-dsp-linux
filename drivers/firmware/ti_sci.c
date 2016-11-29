@@ -1,7 +1,7 @@
 /*
  * Texas Instruments System Control Interface Protocol Driver
  *
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Nishanth Menon
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,8 +26,9 @@
 #include <linux/of_device.h>
 #include <linux/semaphore.h>
 #include <linux/slab.h>
-#include <linux/ti-msgmgr.h>
-#include <linux/ti_sci_protocol.h>
+#include <linux/soc/ti/ti-msgmgr.h>
+#include <linux/soc/ti/ti_sci_protocol.h>
+#include <linux/reboot.h>
 
 #include "ti_sci.h"
 
@@ -90,6 +91,7 @@ struct ti_sci_desc {
  * struct ti_sci_info - Structure representing a TI SCI instance
  * @dev:	Device pointer
  * @desc:	SoC description for this instance
+ * @nb:	Reboot Notifier block
  * @d:		Debugfs file entry
  * @debug_region: Memory region where the debug message are available
  * @debug_region_size: Debug region size
@@ -104,6 +106,7 @@ struct ti_sci_desc {
  */
 struct ti_sci_info {
 	struct device *dev;
+	struct notifier_block nb;
 	const struct ti_sci_desc *desc;
 	struct dentry *d;
 	void __iomem *debug_region;
@@ -117,11 +120,15 @@ struct ti_sci_info {
 	struct list_head node;
 	/* protected by ti_sci_list_mutex */
 	int users;
+
 };
 
 #define cl_to_ti_sci_info(cl)	container_of(cl, struct ti_sci_info, cl)
 #define handle_to_ti_sci_info(handle) container_of(handle, struct ti_sci_info,\
 						   handle)
+#define reboot_to_ti_sci_info(nb) container_of(nb,\
+						      struct ti_sci_info,\
+						      nb)
 #ifdef CONFIG_DEBUG_FS
 
 /**
@@ -188,7 +195,7 @@ static int ti_sci_debugfs_create(struct platform_device *pdev,
 	info->debug_region = devm_ioremap_resource(dev, res);
 	if (IS_ERR(info->debug_region))
 		return 0;
-	info->debug_region_size = res->end - res->start;
+	info->debug_region_size = resource_size(res);
 
 	info->debug_buffer = devm_kcalloc(dev, info->debug_region_size + 1,
 					  sizeof(char), GFP_KERNEL);
@@ -334,7 +341,7 @@ static struct ti_sci_xfer *ti_sci_get_one_xfer(struct ti_sci_info *info,
 	/* Ensure we have sane transfer sizes */
 	if (rx_message_size > info->desc->max_msg_size ||
 	    tx_message_size > info->desc->max_msg_size ||
-	    rx_message_size < sizeof(*hdr) || rx_message_size < sizeof(*hdr))
+	    rx_message_size < sizeof(*hdr) || tx_message_size < sizeof(*hdr))
 		return ERR_PTR(-ERANGE);
 
 	/*
@@ -400,7 +407,7 @@ static void ti_sci_put_one_xfer(struct ti_sci_xfers_info *minfo,
 	 * Keep the locked section as small as possible
 	 * NOTE: we might escape with smp_mb and no lock here..
 	 * but just be conservative and symmetric.
-	 * */
+	 */
 	spin_lock_irqsave(&minfo->xfer_lock, flags);
 	clear_bit(xfer_id, minfo->xfer_alloc_table);
 	spin_unlock_irqrestore(&minfo->xfer_lock, flags);
@@ -536,7 +543,7 @@ static int ti_sci_set_device_state(const struct ti_sci_handle *handle,
 	dev = info->dev;
 
 	xfer = ti_sci_get_one_xfer(info, TI_SCI_MSG_SET_DEVICE_STATE,
-				   TI_SCI_FLAG_REQ_ACK_ON_PROCESSED | flags,
+				   flags | TI_SCI_FLAG_REQ_ACK_ON_PROCESSED,
 				   sizeof(*req), sizeof(*resp));
 	if (IS_ERR(xfer)) {
 		ret = PTR_ERR(xfer);
@@ -1311,7 +1318,7 @@ fail:
 }
 
 /**
- * ti_sci_cmd_clk_get_num_parents() - Get the number of parents of the current clock source
+ * ti_sci_cmd_clk_get_num_parents() - Get num parents of the current clk source
  * @handle:	pointer to TI SCI handle
  * @dev_id:	Device identifier this request is for
  * @clk_id:	Clock identifier for the device for this request.
@@ -1572,15 +1579,64 @@ fail:
 	return ret;
 }
 
-/**
+static int ti_sci_cmd_core_reboot(const struct ti_sci_handle *handle)
+{
+	struct ti_sci_info *info;
+	struct ti_sci_msg_req_reboot *req;
+	struct ti_sci_msg_hdr *resp;
+	struct ti_sci_xfer *xfer;
+	struct device *dev;
+	int ret = 0;
+
+	if (IS_ERR(handle))
+		return PTR_ERR(handle);
+	if (!handle)
+		return -EINVAL;
+
+	info = handle_to_ti_sci_info(handle);
+	dev = info->dev;
+
+	xfer = ti_sci_get_one_xfer(info, TI_SCI_MSG_SYS_RESET,
+				   TI_SCI_FLAG_REQ_ACK_ON_PROCESSED,
+				   sizeof(*req), sizeof(*resp));
+	if (IS_ERR(xfer)) {
+		ret = PTR_ERR(xfer);
+		dev_err(dev, "Message alloc failed(%d)\n", ret);
+		return ret;
+	}
+	req = (struct ti_sci_msg_req_reboot *)xfer->xfer_buf;
+
+	ret = ti_sci_do_xfer(info, xfer);
+	if (ret) {
+		dev_err(dev, "Mbox send fail %d\n", ret);
+		goto fail;
+	}
+
+	resp = (struct ti_sci_msg_hdr *)xfer->xfer_buf;
+
+	if (!tis_sci_is_response_ack(resp))
+		ret = -ENODEV;
+	else
+		ret = 0;
+
+fail:
+	ti_sci_put_one_xfer(&info->minfo, xfer);
+
+	return ret;
+}
+
+/*
  * ti_sci_setup_ops() - Setup the operations structures
  * @info:	pointer to TISCI pointer
  */
 static void ti_sci_setup_ops(struct ti_sci_info *info)
 {
 	struct ti_sci_ops *ops = &info->handle.ops;
+	struct ti_sci_core_ops *core_ops = &ops->core_ops;
 	struct ti_sci_dev_ops *dops = &ops->dev_ops;
 	struct ti_sci_clk_ops *cops = &ops->clk_ops;
+
+	core_ops->reboot_device = ti_sci_cmd_core_reboot;
 
 	dops->get_device = ti_sci_cmd_get_device;
 	dops->idle_device = ti_sci_cmd_idle_device;
@@ -1740,11 +1796,24 @@ const struct ti_sci_handle *devm_ti_sci_get_handle(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(devm_ti_sci_get_handle);
 
+static int tisci_reboot_handler(struct notifier_block *nb, unsigned long mode,
+				void *cmd)
+{
+	struct ti_sci_info *info = reboot_to_ti_sci_info(nb);
+	const struct ti_sci_handle *handle = &info->handle;
+
+	ti_sci_cmd_core_reboot(handle);
+
+	/* call fail OR pass, we should not be here in the first place */
+	return NOTIFY_BAD;
+}
+
 /* Description for K2G */
 static const struct ti_sci_desc ti_sci_pmmc_k2g_desc = {
 	.host_id = 2,
+	/* Conservative duration */
 	.max_rx_timeout_ms = 1000,
-	/* Limited by MBOX_TX_QUEUE_LEN!!!! K2G can handle upto 128! */
+	/* Limited by MBOX_TX_QUEUE_LEN. K2G can handle upto 128 messages! */
 	.max_msgs = 20,
 	.max_msg_size = 64,
 };
@@ -1766,6 +1835,7 @@ static int ti_sci_probe(struct platform_device *pdev)
 	struct mbox_client *cl;
 	int ret = -EINVAL;
 	int i;
+	int reboot = 0;
 
 	of_id = of_match_device(ti_sci_of_match, dev);
 	if (!of_id) {
@@ -1780,6 +1850,8 @@ static int ti_sci_probe(struct platform_device *pdev)
 
 	info->dev = dev;
 	info->desc = desc;
+	reboot = of_property_read_bool(dev->of_node,
+				       "ti,system-reboot-controller");
 	INIT_LIST_HEAD(&info->node);
 	minfo = &info->minfo;
 
@@ -1852,6 +1924,17 @@ static int ti_sci_probe(struct platform_device *pdev)
 
 	ti_sci_setup_ops(info);
 
+	if (reboot) {
+		info->nb.notifier_call = tisci_reboot_handler;
+		info->nb.priority = 128;
+
+		ret = register_restart_handler(&info->nb);
+		if (ret) {
+			dev_err(dev, "reboot registration fail(%d)\n", ret);
+			return ret;
+		}
+	}
+
 	dev_info(dev, "ABI: %d.%d (firmware rev 0x%04x '%s')\n",
 		 info->handle.version.abi_major, info->handle.version.abi_minor,
 		 info->handle.version.firmware_revision,
@@ -1877,6 +1960,9 @@ static int ti_sci_remove(struct platform_device *pdev)
 	int ret = 0;
 
 	info = platform_get_drvdata(pdev);
+
+	if (info->nb.notifier_call)
+		unregister_restart_handler(&info->nb);
 
 	mutex_lock(&ti_sci_list_mutex);
 	if (info->users)

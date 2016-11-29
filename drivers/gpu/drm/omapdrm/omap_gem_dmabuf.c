@@ -21,6 +21,10 @@
 
 #include "omap_drv.h"
 
+/* -----------------------------------------------------------------------------
+ * DMABUF Export
+ */
+
 static struct sg_table *omap_gem_map_dma_buf(
 		struct dma_buf_attachment *attachment,
 		enum dma_data_direction dir)
@@ -159,15 +163,12 @@ static int omap_gem_dmabuf_mmap(struct dma_buf *buffer,
 		struct vm_area_struct *vma)
 {
 	struct drm_gem_object *obj = buffer->priv;
-	struct drm_device *dev = obj->dev;
 	int ret = 0;
 
 	if (WARN_ON(!obj->filp))
 		return -EINVAL;
 
-	mutex_lock(&dev->struct_mutex);
 	ret = drm_gem_mmap_obj(obj, omap_gem_mmap_size(obj), vma);
-	mutex_unlock(&dev->struct_mutex);
 	if (ret < 0)
 		return ret;
 
@@ -200,15 +201,20 @@ struct dma_buf *omap_gem_prime_export(struct drm_device *dev,
 	return dma_buf_export(&exp_info);
 }
 
-struct drm_gem_object *omap_gem_prime_import(struct drm_device *dev,
-		struct dma_buf *buffer)
-{
-	struct drm_gem_object *obj;
+/* -----------------------------------------------------------------------------
+ * DMABUF Import
+ */
 
-	/* is this one of own objects? */
-	if (buffer->ops == &omap_dmabuf_ops) {
-		obj = buffer->priv;
-		/* is it from our device? */
+struct drm_gem_object *omap_gem_prime_import(struct drm_device *dev,
+					     struct dma_buf *dma_buf)
+{
+	struct dma_buf_attachment *attach;
+	struct drm_gem_object *obj;
+	struct sg_table *sgt;
+	int ret;
+
+	if (dma_buf->ops == &omap_dmabuf_ops) {
+		obj = dma_buf->priv;
 		if (obj->dev == dev) {
 			/*
 			 * Importing dmabuf exported from out own gem increases
@@ -219,9 +225,33 @@ struct drm_gem_object *omap_gem_prime_import(struct drm_device *dev,
 		}
 	}
 
-	/*
-	 * TODO add support for importing buffers from other devices..
-	 * for now we don't need this but would be nice to add eventually
-	 */
-	return ERR_PTR(-EINVAL);
+	attach = dma_buf_attach(dma_buf, dev->dev);
+	if (IS_ERR(attach))
+		return ERR_CAST(attach);
+
+	get_dma_buf(dma_buf);
+
+	sgt = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
+	if (IS_ERR(sgt)) {
+		ret = PTR_ERR(sgt);
+		goto fail_detach;
+	}
+
+	obj = omap_gem_new_dmabuf(dev, dma_buf->size, sgt);
+	if (IS_ERR(obj)) {
+		ret = PTR_ERR(obj);
+		goto fail_unmap;
+	}
+
+	obj->import_attach = attach;
+
+	return obj;
+
+fail_unmap:
+	dma_buf_unmap_attachment(attach, sgt, DMA_BIDIRECTIONAL);
+fail_detach:
+	dma_buf_detach(dma_buf, attach);
+	dma_buf_put(dma_buf);
+
+	return ERR_PTR(ret);
 }

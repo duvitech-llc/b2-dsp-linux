@@ -16,21 +16,13 @@
  * General Public License for more details.
  */
 
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/device.h>
-#include <linux/io.h>
-#include <linux/interrupt.h>
-#include <linux/bitops.h>
-#include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/soc/ti/knav_qmss.h>
-#include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/io.h>
+#include <linux/mfd/syscon.h>
+#include <linux/interrupt.h>
+#include <linux/module.h>
 #include <linux/of_address.h>
-#include <linux/firmware.h>
+#include <linux/soc/ti/knav_qmss.h>
 
 #include "knav_qmss.h"
 
@@ -87,7 +79,7 @@ static int knav_acc_set_notify(struct knav_range_info *range,
 	offset = ACC_INTD_OFFSET_STATUS(kq->acc->channel);
 	dev_dbg(kdev->dev, "setup-notify: re-triggering irq for %s\n",
 		kq->acc->name);
-	writel_relaxed(mask, pdsp->intd + offset);
+	write_intd(pdsp, offset, mask);
 	return 0;
 }
 
@@ -127,15 +119,15 @@ static irqreturn_t knav_acc_int_handler(int irq, void *_instdata)
 	if (atomic_read(&acc->retrigger_count)) {
 		atomic_dec(&acc->retrigger_count);
 		__knav_acc_notify(range, acc);
-		writel_relaxed(1, pdsp->intd + ACC_INTD_OFFSET_COUNT(channel));
+		write_intd(pdsp, ACC_INTD_OFFSET_COUNT(channel), 1);
 		/* ack the interrupt */
-		writel_relaxed(ACC_CHANNEL_INT_BASE + channel,
-			       pdsp->intd + ACC_INTD_OFFSET_EOI);
+		write_intd(pdsp, ACC_INTD_OFFSET_EOI,
+			   ACC_CHANNEL_INT_BASE + channel);
 
 		return IRQ_HANDLED;
 	}
 
-	notifies = readl_relaxed(pdsp->intd + ACC_INTD_OFFSET_COUNT(channel));
+	read_intd(pdsp, ACC_INTD_OFFSET_COUNT(channel), &notifies);
 	WARN_ON(!notifies);
 	dma_sync_single_for_cpu(kdev->dev, list_dma, info->list_size,
 				DMA_FROM_DEVICE);
@@ -198,14 +190,10 @@ static irqreturn_t knav_acc_int_handler(int irq, void *_instdata)
 
 	/* flip to the other list */
 	acc->list_index ^= 1;
-
 	/* reset the interrupt counter */
-	writel_relaxed(1, pdsp->intd + ACC_INTD_OFFSET_COUNT(channel));
-
+	write_intd(pdsp, ACC_CHANNEL_INT_BASE + channel, 1);
 	/* ack the interrupt */
-	writel_relaxed(ACC_CHANNEL_INT_BASE + channel,
-		       pdsp->intd + ACC_INTD_OFFSET_EOI);
-
+	write_intd(pdsp, ACC_INTD_OFFSET_EOI, ACC_CHANNEL_INT_BASE + channel);
 	return IRQ_HANDLED;
 }
 
@@ -261,6 +249,10 @@ static int knav_range_setup_acc_irq(struct knav_range_info *range,
 	if (old && !new) {
 		dev_dbg(kdev->dev, "setup-acc-irq: freeing %s for channel %s\n",
 			acc->name, acc->name);
+		ret = irq_set_affinity_hint(irq, NULL);
+		if (ret)
+			dev_warn(range->kdev->dev,
+				 "Failed to set IRQ affinity\n");
 		free_irq(irq, range);
 	}
 
@@ -526,7 +518,7 @@ int knav_init_acc_range(struct knav_device *kdev,
 		return -EINVAL;
 	}
 
-	if (!pdsp->started) {
+	if (!pdsp->started || (pdsp->firmware_type != KNAV_PDSP_FW_TYPE_ACC)) {
 		dev_err(kdev->dev, "pdsp id %d not started for range %s\n",
 			info->pdsp_id, range->name);
 		return -ENODEV;

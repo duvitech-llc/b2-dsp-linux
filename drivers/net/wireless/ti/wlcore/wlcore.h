@@ -318,7 +318,7 @@ struct wl1271 {
 	bool watchdog_recovery;
 
 	/* Reg domain last configuration */
-	u32 reg_ch_conf_last[2];
+	u32 reg_ch_conf_last[2]  __aligned(8);
 	/* Reg domain pending configuration */
 	u32 reg_ch_conf_pending[2];
 
@@ -353,6 +353,11 @@ struct wl1271 {
 	/* in dBm */
 	int power_level;
 
+#ifdef CONFIG_HAS_WAKELOCK
+	struct wake_lock wake_lock;
+	struct wake_lock rx_wake;
+	struct wake_lock recovery_wake;
+#endif
 	struct wl1271_stats stats;
 
 	__le32 *buffer_32;

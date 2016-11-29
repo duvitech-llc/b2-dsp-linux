@@ -990,8 +990,10 @@ static int ov1063x_of_probe(struct i2c_client *client,
 	unsigned int flags;
 	int i, gpio;
 
-	/* Iterate over all the gpios in the device tree
-	 * ENOENT is returned when trying to access last + 1 gpio */
+	/*
+	 * Iterate over all the gpios in the device tree
+	 * ENOENT is returned when trying to access last + 1 gpio
+	 */
 	for (i = 0; i < MAX_NUM_GPIOS; i++) {
 		gpio = of_get_named_gpio_flags(node, "mux-gpios", i, &flags);
 		if (gpio_is_valid(gpio)) {

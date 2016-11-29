@@ -193,9 +193,10 @@
 					reg = <0x5a0 0x170>;
 					#address-cells = <1>;
 					#size-cells = <1>;
+					ranges = <0 0x5a0 0x170>;
 
 					pbias_regulator: pbias_regulator {
-						compatible = "ti,pbias-omap";
+						compatible = "ti,pbias-omap4", "ti,pbias-omap";
 						reg = <0x60 0x4>;
 						syscon = <&omap4_padconf_global>;
 						pbias_mmc_reg: pbias_mmc_omap4 {
@@ -350,14 +351,16 @@
 			#address-cells = <2>;
 			#size-cells = <1>;
 			interrupts = <GIC_SPI 20 IRQ_TYPE_LEVEL_HIGH>;
-			dmas = <&sdma 4>;
-			dma-names = "rxtx";
 			gpmc,num-cs = <8>;
 			gpmc,num-waitpins = <4>;
 			ti,hwmods = "gpmc";
 			ti,no-idle-on-init;
 			clocks = <&l3_div_ck>;
 			clock-names = "fck";
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			gpio-controller;
+			#gpio-cells = <2>;
 		};
 
 		uart1: serial@4806a000 {
@@ -819,19 +822,23 @@
 		};
 
 		dsp: dsp {
-			compatible = "ti,omap4-rproc-dsp";
+			compatible = "ti,omap4-dsp";
 			ti,hwmods = "dsp";
 			syscon-bootreg = <&scm_conf 0x304>;
 			iommus = <&mmu_dsp>;
 			mboxes = <&mailbox &mbox_dsp>;
+			ti,rproc-standby-info = <0x4a004420>;
 			status = "disabled";
 		};
 
-		ipu: ipu {
-			compatible = "ti,omap4-rproc-ipu";
+		ipu: ipu@55020000 {
+			compatible = "ti,omap4-ipu";
+			reg = <0x55020000 0x10000>;
+			reg-names = "l2ram";
 			ti,hwmods = "ipu";
 			iommus = <&mmu_ipu>;
 			mboxes = <&mailbox &mbox_ipu>;
+			ti,rproc-standby-info = <0x4a008920>;
 			status = "disabled";
 		};
 

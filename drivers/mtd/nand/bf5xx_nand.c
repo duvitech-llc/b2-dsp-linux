@@ -252,7 +252,7 @@ static int bf5xx_nand_correct_data_256(struct mtd_info *mtd, u_char *dat,
 	 */
 	if (hweight32(syndrome[0]) == 1) {
 		dev_err(info->device, "ECC data was incorrect!\n");
-		return 1;
+		return -EBADMSG;
 	}
 
 	syndrome[1] = (calced & 0x7FF) ^ (stored & 0x7FF);
@@ -285,7 +285,7 @@ static int bf5xx_nand_correct_data_256(struct mtd_info *mtd, u_char *dat,
 		data = data ^ (0x1 << failing_bit);
 		*(dat + failing_byte) = data;
 
-		return 0;
+		return 1;
 	}
 
 	/*
@@ -298,26 +298,34 @@ static int bf5xx_nand_correct_data_256(struct mtd_info *mtd, u_char *dat,
 	dev_err(info->device,
 		"Please discard data, mark bad block\n");
 
-	return 1;
+	return -EBADMSG;
 }
 
 static int bf5xx_nand_correct_data(struct mtd_info *mtd, u_char *dat,
 					u_char *read_ecc, u_char *calc_ecc)
 {
 	struct nand_chip *chip = mtd->priv;
-	int ret;
+	int ret, bitflips = 0;
 
 	ret = bf5xx_nand_correct_data_256(mtd, dat, read_ecc, calc_ecc);
+	if (ret < 0)
+		return ret;
+
+	bitflips = ret;
 
 	/* If ecc size is 512, correct second 256 bytes */
 	if (chip->ecc.size == 512) {
 		dat += 256;
 		read_ecc += 3;
 		calc_ecc += 3;
-		ret |= bf5xx_nand_correct_data_256(mtd, dat, read_ecc, calc_ecc);
+		ret = bf5xx_nand_correct_data_256(mtd, dat, read_ecc, calc_ecc);
+		if (ret < 0)
+			return ret;
+
+		bitflips += ret;
 	}
 
-	return ret;
+	return bitflips;
 }
 
 static void bf5xx_nand_enable_hwecc(struct mtd_info *mtd, int mode)
@@ -566,7 +574,8 @@ static int bf5xx_nand_read_page_raw(struct mtd_info *mtd, struct nand_chip *chip
 }
 
 static int bf5xx_nand_write_page_raw(struct mtd_info *mtd,
-		struct nand_chip *chip,	const uint8_t *buf, int oob_required)
+		struct nand_chip *chip,	const uint8_t *buf, int oob_required,
+		int page)
 {
 	bf5xx_nand_write_buf(mtd, buf, mtd->writesize);
 	bf5xx_nand_write_buf(mtd, chip->oob_poi, mtd->oobsize);
@@ -782,7 +791,7 @@ static int bf5xx_nand_probe(struct platform_device *pdev)
 	/* initialise mtd info data struct */
 	mtd 		= &info->mtd;
 	mtd->priv	= chip;
-	mtd->owner	= THIS_MODULE;
+	mtd->dev.parent = &pdev->dev;
 
 	/* initialise the hardware */
 	err = bf5xx_nand_hw_init(info);

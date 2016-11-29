@@ -23,6 +23,7 @@
 
 #include <linux/netdevice.h>
 #include <linux/soc/ti/knav_dma.h>
+#include <linux/u64_stats_sync.h>
 
 /* Maximum Ethernet frame size supported by Keystone switch */
 #define NETCP_MAX_FRAME_SIZE		9504
@@ -37,6 +38,8 @@
 #define RGMII_LINK_MAC_PHY_NO_MDIO	7
 #define XGMII_LINK_MAC_PHY		10
 #define XGMII_LINK_MAC_MAC_FORCED	11
+
+#define NETCP_MAX_SUBQUEUES		32
 
 struct netcp_device;
 
@@ -71,33 +74,61 @@ struct netcp_addr {
 	struct list_head	node;
 };
 
+struct netcp_stats {
+	struct u64_stats_sync   syncp_rx ____cacheline_aligned_in_smp;
+	u64                     rx_packets;
+	u64                     rx_bytes;
+	u32                     rx_errors;
+	u32                     rx_dropped;
+
+	struct u64_stats_sync   syncp_tx ____cacheline_aligned_in_smp;
+	u64                     tx_packets;
+	u64                     tx_bytes;
+	u32                     tx_errors;
+	u32                     tx_dropped;
+};
+
+struct netcp_pool_info {
+	u32			num_descs;
+	u32			region_id;
+	unsigned int		pause_threshold;
+	unsigned int		resume_threshold;
+	void			*pool;
+};
+
 struct netcp_intf {
 	struct device		*dev;
 	struct device		*ndev_dev;
 	struct net_device	*ndev;
 	bool			big_endian;
-	unsigned int		tx_compl_qid;
-	void			*tx_pool;
-	struct list_head	txhook_list_head;
-	unsigned int		tx_pause_threshold;
-	void			*tx_compl_q;
 
-	unsigned int		tx_resume_threshold;
+	u32			tx_subqueues;
+	unsigned int		tx_compl_qid;
+	u32			tx_compl_budget;
+	void			*tx_compl_q;
+	struct list_head	txhook_list_head;
+
 	void			*rx_queue;
 	void			*rx_pool;
 	struct list_head	rxhook_list_head;
 	unsigned int		rx_queue_id;
 	void			*rx_fdq[KNAV_DMA_FDQ_PER_CHAN];
-	u32			rx_buffer_sizes[KNAV_DMA_FDQ_PER_CHAN];
 	struct napi_struct	rx_napi;
 	struct napi_struct	tx_napi;
+#define ETH_SW_CAN_REMOVE_ETH_FCS	BIT(0)
+	u32			hw_cap;
 
+	/* 64-bit netcp stats */
+	struct netcp_stats	stats;
+	u32			rx_queue_depths[KNAV_DMA_FDQ_PER_CHAN];
+
+	/* Non Data path related stuffs below. In future, move any variable
+	 * if used on data path to above this for better cache line use
+	 */
 	void			*rx_channel;
 	const char		*dma_chan_name;
 	u32			rx_pool_size;
 	u32			rx_pool_region_id;
-	u32			tx_pool_size;
-	u32			tx_pool_region_id;
 	struct list_head	module_head;
 	struct list_head	interface_list;
 	struct list_head	addr_list;
@@ -111,14 +142,18 @@ struct netcp_intf {
 
 	/* DMA configuration data */
 	u32			msg_enable;
-	u32			rx_queue_depths[KNAV_DMA_FDQ_PER_CHAN];
+
+	struct netcp_pool_info	tx_pool[1];
+	/* NB: tx-pools (#tx-subqueues) are allocated dynamically */
 };
 
+#define	NETCP_EPIB_LEN			KNAV_DMA_NUM_EPIB_WORDS
 #define	NETCP_PSDATA_LEN		KNAV_DMA_NUM_PS_WORDS
 struct netcp_packet {
 	struct sk_buff		*skb;
 	u32			*epib;
 	u32			*psdata;
+	u32			eflags;
 	unsigned int		psdata_len;
 	struct netcp_intf	*netcp;
 	struct netcp_tx_pipe	*tx_pipe;

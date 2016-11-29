@@ -553,14 +553,18 @@ struct palmas_usb {
 	int vbus_irq;
 
 	int gpio_id_irq;
+	int gpio_vbus_irq;
 	struct gpio_desc *id_gpiod;
-	int sw_debounce_ms;
+	struct gpio_desc *vbus_gpiod;
+	unsigned long sw_debounce_jiffies;
+	struct delayed_work wq_detectid;
 
 	enum palmas_usb_state linkstat;
 	int wakeup;
 	bool enable_vbus_detection;
 	bool enable_id_detection;
 	bool enable_gpio_id_detection;
+	bool enable_gpio_vbus_detection;
 };
 
 #define comparator_to_palmas(x) container_of((x), struct palmas_usb, comparator)

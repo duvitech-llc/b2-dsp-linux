@@ -51,7 +51,7 @@ enum otg_fsm_timer {
  * DRD mode hardware Inputs
  *
  * @id:		TRUE for B-device, FALSE for A-device.
- * @vbus:	VBUS voltage in regulation.
+ * @b_sess_vld:	VBUS voltage in regulation.
  *
  * OTG hardware Inputs
  *
@@ -128,8 +128,7 @@ enum otg_fsm_timer {
  */
 struct otg_fsm {
 	/* Input */
-	int id;			/* DRD + OTG */
-	int vbus;		/* DRD only */
+	int id;
 	int adp_change;
 	int power_up;
 	int a_srp_det;

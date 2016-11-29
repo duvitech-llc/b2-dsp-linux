@@ -839,89 +839,6 @@ free_carv:
 }
 
 /**
- * rproc_handle_intmem() - (deprecated) handle internal memory resource entry
- * @rproc: rproc handle
- * @rsc: the intmem resource entry
- * @offset: offset of the resource data in resource table
- * @avail: size of available data (for image validation)
- *
- * ** DEPRECATION WARNING **
- * This is a deprecated function, it is being defined to print a deprecation
- * warning for prior product firmwares so that they can stop using this
- * resource type and move away from using it.
- *
- * This function will handle firmware requests for mapping a memory region
- * internal to a remote processor into kernel. It neither allocates any
- * physical pages, nor performs any iommu mapping, as this resource entry
- * is primarily used for representing physical internal memories. If the
- * internal memory region can only be accessed through an iommu, please
- * use a devmem resource entry.
- *
- * These resource entries should be grouped near the carveout entries in
- * the firmware's resource table, as other firmware entries might request
- * placing other data objects inside these memory regions (e.g. data/code
- * segments, trace resource entries, ...).
- */
-static int rproc_handle_intmem(struct rproc *rproc, struct fw_rsc_intmem *rsc,
-			       int offset, int avail)
-{
-	struct rproc_mem_entry *intmem;
-	struct device *dev = &rproc->dev;
-	void *va;
-	int ret;
-
-	dev_warn(dev, "RSC_INTMEM is deprecated. Please do not use this resource type to support loading into internal memories.\n");
-
-	if (sizeof(*rsc) > avail) {
-		dev_err(dev, "intmem rsc is truncated\n");
-		return -EINVAL;
-	}
-
-	if (rsc->version != 1) {
-		dev_err(dev, "intmem rsc version %d is not supported\n",
-			rsc->version);
-		return -EINVAL;
-	}
-
-	if (rsc->reserved) {
-		dev_err(dev, "intmem rsc has non zero reserved bytes\n");
-		return -EINVAL;
-	}
-
-	dev_dbg(dev, "intmem rsc: da 0x%x, pa 0x%x, len 0x%x\n",
-		rsc->da, rsc->pa, rsc->len);
-
-	intmem = kzalloc(sizeof(*intmem), GFP_KERNEL);
-	if (!intmem)
-		return -ENOMEM;
-
-	va = (__force void *)ioremap_nocache(rsc->pa, rsc->len);
-	if (!va) {
-		dev_err(dev, "ioremap_nocache err: %d\n", rsc->len);
-		ret = -ENOMEM;
-		goto free_intmem;
-	}
-
-	dev_dbg(dev, "intmem mapped pa 0x%x of len 0x%x into kernel va %p\n",
-		rsc->pa, rsc->len, va);
-
-	intmem->va = va;
-	intmem->len = rsc->len;
-	intmem->dma = rsc->pa;
-	intmem->da = rsc->da;
-	intmem->priv = (void *)1;    /* prevents freeing */
-
-	/* reuse the rproc->carveouts list, so that loading is automatic */
-	list_add_tail(&intmem->node, &rproc->carveouts);
-
-	return 0;
-
-free_intmem:
-	kfree(intmem);
-	return ret;
-}
-
-/**
  * rproc_handle_custom_rsc() - provide implementation specific hook
  *			       to handle custom resources
  * @rproc: the remote processor
@@ -942,8 +859,8 @@ static int rproc_handle_custom_rsc(struct rproc *rproc,
 	struct device *dev = &rproc->dev;
 
 	if (!rproc->ops->handle_custom_rsc) {
-		dev_err(dev, "custom resource handler unavailable\n");
-		return -EINVAL;
+		dev_err(dev, "custom resource handler not implemented, ignoring resource\n");
+		return 0;
 	}
 
 	if (sizeof(*rsc) > avail) {
@@ -971,7 +888,7 @@ static rproc_handle_resource_t rproc_loading_handlers[RSC_LAST] = {
 	[RSC_CARVEOUT] = (rproc_handle_resource_t)rproc_handle_carveout,
 	[RSC_DEVMEM] = (rproc_handle_resource_t)rproc_handle_devmem,
 	[RSC_TRACE] = (rproc_handle_resource_t)rproc_handle_trace,
-	[RSC_INTMEM] = (rproc_handle_resource_t)rproc_handle_intmem,
+	[RSC_INTMEM] = NULL, /* deprecated resource type, ignore silently */
 	[RSC_VDEV] = NULL, /* VDEVs were handled upon registrarion */
 };
 
@@ -1107,11 +1024,8 @@ static void rproc_resource_cleanup(struct rproc *rproc)
 
 	/* clean up carveout allocations */
 	list_for_each_entry_safe(entry, tmp, &rproc->carveouts, node) {
-		if (!entry->priv)
-			dma_free_coherent(dev->parent, entry->len, entry->va,
-					  entry->dma);
-		else
-			iounmap((__force void __iomem *)entry->va);
+		dma_free_coherent(dev->parent, entry->len, entry->va,
+				  entry->dma);
 		list_del(&entry->node);
 		kfree(entry);
 	}
@@ -1185,6 +1099,7 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 			goto clean_up;
 		}
 	}
+
 	if (!rproc->use_userspace_loader) {
 		/* load the ELF segments to memory */
 		ret = rproc_load_segments(rproc, fw);
@@ -1672,11 +1587,6 @@ int rproc_add(struct rproc *rproc)
 	if (ret < 0)
 		return ret;
 
-	/* expose to rproc_get_by_phandle users */
-	mutex_lock(&rproc_list_mutex);
-	list_add(&rproc->node, &rproc_list);
-	mutex_unlock(&rproc_list_mutex);
-
 	dev_info(dev, "%s is available\n", rproc->name);
 
 	dev_info(dev, "Note: remoteproc is still under development and considered experimental.\n");
@@ -1684,8 +1594,16 @@ int rproc_add(struct rproc *rproc)
 
 	/* create debugfs entries */
 	rproc_create_debug_dir(rproc);
+	ret = rproc_add_virtio_devices(rproc);
+	if (ret < 0)
+		return ret;
 
-	return rproc_add_virtio_devices(rproc);
+	/* expose to rproc_get_by_phandle users */
+	mutex_lock(&rproc_list_mutex);
+	list_add(&rproc->node, &rproc_list);
+	mutex_unlock(&rproc_list_mutex);
+
+	return 0;
 }
 EXPORT_SYMBOL(rproc_add);
 

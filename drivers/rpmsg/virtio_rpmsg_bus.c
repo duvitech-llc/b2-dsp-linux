@@ -265,6 +265,9 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct virtproc_info *vrp,
 		goto free_ept;
 	}
 	ept->addr = id;
+	ept->cb_lockdep_class = ((ept->addr == RPMSG_NS_ADDR) ?
+				 RPMSG_LOCKDEP_SUBCLASS_NS :
+				 RPMSG_LOCKDEP_SUBCLASS_NORMAL);
 
 	mutex_unlock(&vrp->endpoints_lock);
 
@@ -342,7 +345,7 @@ __rpmsg_destroy_ept(struct virtproc_info *vrp, struct rpmsg_endpoint *ept)
 	mutex_unlock(&vrp->endpoints_lock);
 
 	/* make sure in-flight inbound messages won't invoke cb anymore */
-	mutex_lock(&ept->cb_lock);
+	mutex_lock_nested(&ept->cb_lock, ept->cb_lockdep_class);
 	ept->cb = NULL;
 	mutex_unlock(&ept->cb_lock);
 
@@ -451,17 +454,19 @@ static struct bus_type rpmsg_bus = {
 };
 
 /**
- * register_rpmsg_driver() - register an rpmsg driver with the rpmsg bus
+ * __register_rpmsg_driver() - register an rpmsg driver with the rpmsg bus
  * @rpdrv: pointer to a struct rpmsg_driver
+ * @owner: owning module/driver
  *
  * Returns 0 on success, and an appropriate error value on failure.
  */
-int register_rpmsg_driver(struct rpmsg_driver *rpdrv)
+int __register_rpmsg_driver(struct rpmsg_driver *rpdrv, struct module *owner)
 {
 	rpdrv->drv.bus = &rpmsg_bus;
+	rpdrv->drv.owner = owner;
 	return driver_register(&rpdrv->drv);
 }
-EXPORT_SYMBOL(register_rpmsg_driver);
+EXPORT_SYMBOL(__register_rpmsg_driver);
 
 /**
  * unregister_rpmsg_driver() - unregister an rpmsg driver from the rpmsg bus
@@ -914,7 +919,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 
 	if (ept) {
 		/* make sure ept->cb doesn't go away while we use it */
-		mutex_lock(&ept->cb_lock);
+		mutex_lock_nested(&ept->cb_lock, ept->cb_lockdep_class);
 
 		if (ept->cb)
 			ept->cb(ept->rpdev, msg->data, msg->len, ept->priv,
@@ -1048,7 +1053,7 @@ static void rpmsg_ns_cb(struct rpmsg_channel *rpdev, void *data, int len,
 static int rpmsg_probe(struct virtio_device *vdev)
 {
 	vq_callback_t *vq_cbs[] = { rpmsg_recv_done, rpmsg_xmit_done };
-	const char *names[] = { "input", "output" };
+	static const char * const names[] = { "input", "output" };
 	struct virtqueue *vqs[2];
 	struct virtproc_info *vrp;
 	void *bufs_va;

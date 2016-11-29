@@ -27,7 +27,7 @@ The following are the mandatory properties:
 			    "ti,k2hk-dsp" for DSPs on Keystone2 Hawking/Kepler SoCs
 			    "ti,k2l-dsp" for DSPs on Keystone2 Lamarr SoCs
 			    "ti,k2e-dsp" for DSPs on Keystone2 Edison SoCs
-			    "ti,k2g-dsp" for DSPs on Keystone2 Galileo SoCs
+			    "ti,k2g-dsp" for DSPs on Keystone K2G SoCs
 
 - reg:			Should contain an entry for each value in 'reg-names'.
 			Each entry should have the memory region's start address
@@ -51,11 +51,9 @@ The following are the mandatory properties:
 			boot address register within that node's address space.
 
 - resets:		Should contain the phandle to the reset controller node
-			managing the resets for this device, and an array of
-			cells for the reset argument specifier as defined by
-			the selected reset controller node's binding. Please
-			also refer to either of the following reset bindings
-			for the reset argument specifier as per SoC,
+			managing the resets for this device, and a reset
+			specifier. Please refer to either of the following reset
+			bindings for the reset argument specifier as per SoC,
 			Documentation/devicetree/bindings/reset/reset/syscon-reset.txt
 			    for K2HK/K2L/K2E SoCs or,
 			Documentation/devicetree/bindings/reset/reset/ti,sci-reset.txt
@@ -87,12 +85,12 @@ The following are the mandatory properties:
 Optional properties:
 --------------------
 
-- power-domains :	_required_ property only for Keystone 2 Galileo SoC.
-			Should contain a phandle to a PM domain provider node,
-			and a PM domain specifier as defined by the binding,
+- power-domains:	_required_ property only for K2G SoCs. Should contain a
+			phandle to a PM domain provider node, and a PM domain
+			specifier as defined by the binding,
 			Documentation/devicetree/bindings/soc/ti/sci-pm-domain.txt
 
-- memory-region	:	phandle to the reserved memory node to be associated
+- memory-region:	phandle to the reserved memory node to be associated
 			with the remoteproc device. The reserved memory node
 			can be a CMA memory node, and should be defined as
 			per the bindings in
@@ -113,7 +111,7 @@ Examples:
 			reg-names = "l2sram", "l1pram", "l1dram";
 			clocks = <&clkgem0>;
 			ti,syscon-dev = <&devctrl 0x40>;
-			resets = < &pscrst 0xa3c 8 0 0x83c 8 0>;
+			resets = <&pscrst 0>;
 			interrupt-parent = <&kirq0>;
 			interrupts = <0 8>;
 			interrupt-names = "vring", "exception";

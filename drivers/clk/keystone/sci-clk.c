@@ -1,7 +1,7 @@
 /*
  * SCI Clock driver for keystone based devices
  *
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Tero Kristo <t-kristo@ti.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -17,12 +17,12 @@
 #include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/slab.h>
+#include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of.h>
-#include <linux/module.h>
-#include <linux/ti_sci_protocol.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/soc/ti/ti_sci_protocol.h>
 
 #define SCI_CLK_SSC_ENABLE		BIT(0)
 #define SCI_CLK_ALLOW_FREQ_CHANGE	BIT(1)
@@ -158,11 +158,7 @@ static unsigned long sci_clk_recalc_rate(struct clk_hw *hw,
 /**
  * sci_clk_determine_rate - Determines a clock rate a clock can be set to
  * @hw: clock to change rate for
- * @rate: target rate for the clock
- * @min_rate: minimum rate for the clock
- * @max_rate: maximum rate for the clock
- * @best_parent_rate: best parent rate, not used for TI SCI clocks
- * @best_parent_hw: best parent clock to use, not used for TI SCI clocks
+ * @req: requested rate configuration for the clock
  *
  * Determines a suitable clock rate and parent for a TI SCI clock.
  * The parent handling is un-used, as generally the parent clock rates
@@ -170,11 +166,8 @@ static unsigned long sci_clk_recalc_rate(struct clk_hw *hw,
  * by the firmware. Returns the new clock rate that can be set for the
  * clock, or 0 in failure.
  */
-static long sci_clk_determine_rate(struct clk_hw *hw, unsigned long rate,
-				   unsigned long min_rate,
-				   unsigned long max_rate,
-				   unsigned long *best_parent_rate,
-				   struct clk_hw **best_parent_hw)
+static int sci_clk_determine_rate(struct clk_hw *hw,
+				  struct clk_rate_request *req)
 {
 	struct sci_clk *clk = to_sci_clk(hw);
 	u64 new_rate;
@@ -182,8 +175,10 @@ static long sci_clk_determine_rate(struct clk_hw *hw, unsigned long rate,
 
 	ret = clk->provider->ops->get_best_match_freq(clk->provider->sci,
 						      clk->dev_id,
-						      clk->clk_id, min_rate,
-						      rate, max_rate,
+						      clk->clk_id,
+						      req->min_rate,
+						      req->rate,
+						      req->max_rate,
 						      &new_rate);
 	if (ret) {
 		dev_err(clk->provider->dev,
@@ -192,7 +187,7 @@ static long sci_clk_determine_rate(struct clk_hw *hw, unsigned long rate,
 		return 0;
 	}
 
-	return (long)new_rate;
+	return (int)new_rate;
 }
 
 /**
@@ -287,6 +282,7 @@ static struct clk *_sci_clk_get(struct sci_clk_provider *provider,
 	struct clk *clk;
 	struct sci_clk *sci_clk = NULL;
 	char name[20];
+	char **parent_names = NULL;
 	int i;
 	int ret;
 
@@ -323,12 +319,10 @@ static struct clk *_sci_clk_get(struct sci_clk_provider *provider,
 	}
 
 	if (init.num_parents) {
-		init.parent_names = devm_kcalloc(provider->dev,
-						 init.num_parents,
-						 sizeof(char *),
-						 GFP_KERNEL);
+		parent_names = devm_kcalloc(provider->dev, init.num_parents,
+					    sizeof(char *), GFP_KERNEL);
 
-		if (!init.parent_names) {
+		if (!parent_names) {
 			ret = -ENOMEM;
 			goto err;
 		}
@@ -345,10 +339,11 @@ static struct clk *_sci_clk_get(struct sci_clk_provider *provider,
 			snprintf(parent_name, 20, "%s:%d:%d",
 				 dev_name(provider->dev), sci_clk->dev_id,
 				 sci_clk->clk_id + 1 + i);
-			init.parent_names[i] = parent_name;
+			parent_names[i] = parent_name;
 
 			_sci_clk_get(provider, dev_id, clk_id + 1 + i, false);
 		}
+		init.parent_names = (const char * const *)parent_names;
 	}
 
 	init.ops = &sci_clk_ops;
@@ -367,11 +362,11 @@ static struct clk *_sci_clk_get(struct sci_clk_provider *provider,
 	return clk;
 
 err:
-	if (init.parent_names) {
+	if (parent_names) {
 		for (i = 0; i < init.num_parents; i++)
-			devm_kfree(provider->dev, (char *)init.parent_names[i]);
+			devm_kfree(provider->dev, parent_names[i]);
 
-		devm_kfree(provider->dev, init.parent_names);
+		devm_kfree(provider->dev, parent_names);
 	}
 
 	devm_kfree(provider->dev, sci_clk);
