@@ -145,23 +145,6 @@ static void omap_clkevt_unidle(struct clock_event_device *unused)
 	__omap_dm_timer_int_enable(&clkev, OMAP_TIMER_INT_OVERFLOW);
 }
 
-static void omap_clkevt_idle(struct clock_event_device *unused)
-{
-	if (!clockevent_gpt_hwmod)
-		return;
-
-	omap_hwmod_idle(clockevent_gpt_hwmod);
-}
-
-static void omap_clkevt_unidle(struct clock_event_device *unused)
-{
-	if (!clockevent_gpt_hwmod)
-		return;
-
-	omap_hwmod_enable(clockevent_gpt_hwmod);
-	__omap_dm_timer_int_enable(&clkev, OMAP_TIMER_INT_OVERFLOW);
-}
-
 static struct clock_event_device clockevent_gpt = {
 	.features		= CLOCK_EVT_FEAT_PERIODIC |
 				  CLOCK_EVT_FEAT_ONESHOT,
@@ -854,3 +837,4 @@ static int __init omap2_override_clocksource(char *str)
 	return 0;
 }
 early_param("clocksource", omap2_override_clocksource);
+

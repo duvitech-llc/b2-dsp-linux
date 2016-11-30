@@ -49,7 +49,7 @@ int fsl8250_handle_irq(struct uart_port *port)
 	lsr = orig_lsr = up->port.serial_in(&up->port, UART_LSR);
 
 	if (lsr & (UART_LSR_DR | UART_LSR_BI))
-		lsr = serial8250_rx_chars(up, lsr, NULL);
+		lsr = serial8250_rx_chars(up, lsr);
 
 	serial8250_modem_status(up);
 
@@ -61,3 +61,4 @@ int fsl8250_handle_irq(struct uart_port *port)
 	return 1;
 }
 EXPORT_SYMBOL_GPL(fsl8250_handle_irq);
+

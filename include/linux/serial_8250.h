@@ -148,8 +148,7 @@ extern void serial8250_do_pm(struct uart_port *port, unsigned int state,
 extern void serial8250_do_set_mctrl(struct uart_port *port, unsigned int mctrl);
 extern int fsl8250_handle_irq(struct uart_port *port);
 int serial8250_handle_irq(struct uart_port *port, unsigned int iir);
-unsigned char serial8250_rx_chars(struct uart_8250_port *up, unsigned char lsr,
-				  spinlock_t *flip_lock);
+unsigned char serial8250_rx_chars(struct uart_8250_port *up, unsigned char lsr);
 void serial8250_tx_chars(struct uart_8250_port *up);
 unsigned int serial8250_modem_status(struct uart_8250_port *up);
 void serial8250_init_port(struct uart_8250_port *up);
@@ -163,3 +162,4 @@ extern void serial8250_set_isa_configurator(void (*v)
 						unsigned short *capabilities));
 
 #endif
+

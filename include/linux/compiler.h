@@ -536,3 +536,4 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 # define nokprobe_inline	inline
 #endif
 #endif /* __LINUX_COMPILER_H */
+
